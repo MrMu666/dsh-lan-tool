@@ -63,6 +63,8 @@ Open the DSH sidebar **Plugins** page and install the package name **`dsh-lan-to
 
 > ⚠️ **After installing (or updating) the plugin, fully quit and reopen the desktop app once.** The plugin's node half (the password gate, the switch and every `/dsh-lan/*` route) is imported once per app run: **reinstalling or upgrading inside a running app leaves the node half on the old code**, while the browser half does hot-reload — a mixed pair. Since 1.4.2 the client reports that mismatch in the settings card and the console (in older versions it showed up as an unexplained password page).
 >
+> ⚠️ **A brand-new release may not install (pnpm's minimum release age)**: pnpm refuses packages published too recently, and the plugin manager only exempts the versions it has actually installed before — so typing the package name can silently resolve to the **previous** version (the new features and fixes never appear). Ask for the version explicitly (e.g. `dsh-lan-tool@1.4.2`), or add it to `minimumReleaseAgeExclude` in `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` first.
+>
 > This requires the package to be published on npm. If it is not published yet (or you want to install this local checkout), use option 2.
 
 ### Option 2 — the CLI (local directory / path / tarball)

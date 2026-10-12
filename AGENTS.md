@@ -48,6 +48,9 @@ README.md / README.en.md   面向用户；**不放更新记录**
 
 - `dsh-plugin-manager` 的 `reconcile()`（`@deepseek-ai/dsh-plugin-manager/lib/types/operations.js`）会把带 `dsh.bundle` 的新依赖自动追加进 `dsh.profile.bundles`。
 - CLI 需要**先退出桌面版**（`requireDesktopProfile` 只检查 profile 有没有初始化过，"fully quit"只是文案；真正的风险是运行中改写 `node_modules` 在 Windows 上被占用）。
+- **刚发布的版本会被 pnpm 的"发布年龄"策略挡住（2026-10-12 实测事故，排查"修了却没生效"先看这条）**：pnpm 默认不安装"太新"的包，而 `dsh-plugin-manager` 只会给**它实际装到的那个版本**在 profile 的 `pnpm-workspace.yaml` 里补一条 `minimumReleaseAgeExclude`。于是当天连着发布 1.4.0 → 1.4.1 → 1.4.2 之后，用户在 Plugins 页输入包名**每次都解析回 1.4.0**（日志现象：`+ dsh-lan-tool ^1.4.0`、`Progress: resolved … reused 1`；证据文件：`<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml`），看起来就是"新版本没修好"，实际是旧版本被反复装上、重启多少次都一样。
+  - **判定**：`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 里有没有目标版本 ＋ 安装日志里的 `^<版本>`。
+  - **解法**：把目标版本加进该名单（如 `- dsh-lan-tool@1.4.2`），或在 Plugins 页/CLI 显式写 `包名@版本`。**发新版并希望用户立刻装到时，先补这一条**，否则对方拿到的还是上一次的版本。
 - **旧的"补丁路径"（把包拷进 `profiles/node_modules` + 正则改 profile 补丁）已随 1.4.0 的安装脚本一起删除，不要恢复**：那套写法必须与 plugin-manager 抢写同一个 YAML 文件，而且在 0.2.0 里 `webServer.register()` 对重复路由直接抛异常。
 - 装/卸载开关也可用 `writePluginEnabled` 的产物（`@deepseek-ai/dsh-plugin-manager/lib/types/patch.js`：按 **id + 可选 name** 匹配 profile 补丁里的覆盖行，匹配不到就**追加**一条 `{id, disabled}`）。所以覆盖行的 `id`/`name` 必须与新包名一致，改名时别只改一半。
 
