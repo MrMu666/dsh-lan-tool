@@ -1,24 +1,25 @@
-# dsh-LAN bundle patch — applies when the package is installed as a profile
-# bundle (`dsh plugin --profile web add <this package>`).
+# dsh-lan-tool bundle patch.
 #
-# The patch-path installer (install.ps1) writes equivalent entries into the
-# profile's own cordis.patch.yml instead; install via ONE of the two paths,
-# never both (a duplicate `webserver` override and a duplicate `dsh-lan` row
-# would collide).
-
-# Default the Web GUI bind host to all interfaces. An explicit `--host` flag
-# still wins; the command-line guard that rejects `--host 0.0.0.0` stays
-# intact, so deliberate exposure happens through this configuration layer.
-- id: webserver
-  config:
-    host: !!js ctx.webStartup.host ?? '0.0.0.0'
-    port: !!js ctx.webStartup.port ?? 3080
-
-# The dual-face plugin row: the node half (lib/index.js) mounts on the host
-# plane, and the `dsh.client` declaration in package.json makes the modules
-# row serve /plugins/dsh-lan/client.js to browsers.
+# It deliberately contains NO `webserver` override. While LAN access is off the
+# composition keeps the official row from @deepseek-ai/dsh-web-app untouched
+# (`host: !!js ctx.webStartup.host ?? '127.0.0.1'` plus the gzip keys), so
+# "off" is exactly the stock behaviour and gzip is never lost.
+#
+# Turning LAN access ON (Settings → General → 局域网访问) makes lib/index.js
+# write a managed `webserver` override into the ACTIVE profile's own
+# cordis.patch.yml — the profile patch layer is applied after every bundle
+# layer, the harness watches that file, and the hot reload re-binds the socket.
+# Turning it OFF removes that override again. One writer, one template: it
+# restates host, port AND the three compression keys, because a patch replaces
+# the targeted row's whole `config` block.
+#
+# npm package name, loader row name and the module's own `const name` must stay
+# byte-identical: the loader resolves this row with `import()`, and the browser
+# bundle URL is /plugins/<package name>/client.js.
 - insert:
-    - id: dsh-lan
-      name: 'dsh-LAN'
+    - id: dsh-lan-tool
+      name: 'dsh-lan-tool'
       config:
-        profile: web
+        # Fallback only: lib/index.js prefers profileContext.name (the profile
+        # that is actually running) and profileContext.patchPath.
+        profile: desktop

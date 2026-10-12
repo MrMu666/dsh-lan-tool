@@ -1,7 +1,7 @@
 {
-  "name": "dsh-LAN",
-  "version": "1.3.8",
-  "description": "DSH Web GUI LAN access plugin: bind 0.0.0.0, manage the firewall rule, and a password-gated /lanapi proxy that re-exposes loopback-pinned settings/credential operations to LAN browsers. UI toggle card in General settings.",
+  "name": "dsh-lan-tool",
+  "version": "1.4.0",
+  "description": "LAN access for the DeepSeek Harness Web GUI: a password-gated LAN channel whose on/off switch lives in Settings (no install scripts, no password prompt at install time). Installs like any other profile bundle through its own cordis.patch.yml.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -9,18 +9,30 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible"
+      },
+      "dsh": ">=0.2.0-rc.2"
+    },
     "client": {
       "inject": [
-        "slots",
-        "locale",
-        "connection",
-        "workspaces",
-        "layout",
-        "@deepseek-ai/dsh-client-ui-workspace"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-layout"
       ],
       "platform": "web"
     }
@@ -29,5 +41,25 @@
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-client-connection": "*"
   },
-  "license": "MIT"
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "bundle",
+    "lan",
+    "remote",
+    "web-gui"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrMu666/dsh-lan-tool.git"
+  },
+  "homepage": "https://github.com/MrMu666/dsh-lan-tool#readme",
+  "bugs": {
+    "url": "https://github.com/MrMu666/dsh-lan-tool/issues"
+  }
 }

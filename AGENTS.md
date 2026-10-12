@@ -1,67 +1,89 @@
-# AGENTS.md — dsh-LAN 维护指南
+# AGENTS.md — dsh-lan-tool 维护指南
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
+
+当前基线：**dsh-lan-tool 1.4.0 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
 ## 1. 项目定位与文件地图
 
-dsh-LAN 是 DeepSeek Harness（DSH）Web GUI 的局域网访问插件，双半边结构：
+dsh-lan-tool 是 DeepSeek Harness（DSH）Web GUI 的局域网访问插件，双半边结构，**按官方 bundle 插件规范安装**（没有安装脚本）：
 
 ```
-lib/index.js      node 半边（host 平面）：0.0.0.0 绑定、防火墙规则、/lanapi 口令代理、/dsh-lan/status|configure|unlock
+package.json      name=dsh-lan-tool；dsh.bundle.patch / dsh.compatibility / dsh.client.{platform,inject}
+cordis.patch.yml  bundle 补丁：只有一条 insert 行，**故意不写 webserver 覆盖**
+lib/index.js      node 半边（host 平面）：profile 补丁受管块、防火墙、口令门、/lanapi、/dsh-lan/*
 lib/client.js     浏览器半边：登录门、移动端触控适配、设置页「局域网访问」卡片、侧栏锁定按钮、工作区目录选择器（影子）
-lib/landing.html  门后落地页
-cordis.patch.yml  bundle 安装路径用的补丁（bind host + 插件行）
-install.ps1 / install.sh       补丁路径安装：拷包 + 写 profile 补丁块
-uninstall.ps1 / uninstall.sh   反向操作
-README.md / README.en.md       面向用户；**不放更新记录**
+lib/landing.html  门后落地页（口令 → /dsh-lan/unlock → /dsh-lan/mint → 干净 /）
+README.md / README.en.md   面向用户；**不放更新记录**
 ```
 
 - `package.json` 的 `dsh.client.platform = "web"`、`dsh.client.inject` 决定客户端半边被谁加载、按什么顺序加载；`type: module`。
 - `lib/client.js` 的形态是 DSH 客户端模块约定：整体包在 `window.__ModuleLoader__.load({ id, factory: (require) => { ... exports.apply / exports.inject } })` 里。**不要**改成 ESM、也不要引入打包器产物。
 
+### 1.1 四处名字必须逐字一致（改名 checklist）
+
+| 位置 | 现值 | 为什么必须一致 |
+|---|---|---|
+| `package.json.name` | `dsh-lan-tool` | 安装 spec 校验（全小写）；bundle 登记名 |
+| `cordis.patch.yml` 的 `insert[].name` | `dsh-lan-tool` | loader 用它 `import()`；**insert 分支不校验 name**，写错只表现为 import 失败 |
+| `lib/index.js` 的 `const name` | `dsh-lan-tool` | 行标识（客户端 bundle 的 id 来源） |
+| `lib/client.js` 第 2 行的 `id:` | `dsh-lan-tool` | **`window.__ModuleLoader__.load({id})` 的 id 就是包名**：`ClientModuleSystem.arrive(row)` 要求 `factories.has(row.id)`，而 `row.id` 来自包名（`@deepseek-ai/dsh-client-modules/lib/client.js` 的 `arrive()` / `graphRow(packageName, …)`）。写错 ⇒ 该 bundle 永远"loaded without registering"⇒ 半边不加载 |
+
+另需一致的两处（非硬约束，但必须各写各的对）：
+
+- `lib/client.js` 里所有 `tag.dataset.plugin = "dsh-lan-tool"`：**这个属性会被读**。`removeOwnedStyles(id)`（`dsh-client-modules/lib/client.js` 的 entry-lifecycle 段）按 `style[data-plugin] === 包 id` 删除该插件拥有的样式；写成别的值只会让样式标签删不掉。（旧文档写的"只写不读"是错的，别照抄。）
+- 插槽注册的 `registrant`（座位看护用它判断"自己是否在座"）。
+
+`data-plugin-css` 的 id 前缀（`dsh-lan-tool/*.css`）只是去重句柄，前缀变了最多残留一个空 `<style>`。
+
 ---
 
-## 2. 两条安装路径（选一条，绝不混用）
+## 2. 安装路径（只有一条：bundle 路径）
 
 | 路径 | 命令 | 落地位置 | 生效方式 |
 |---|---|---|---|
-| 补丁路径（默认，本项目当前就是这么装的） | `install.ps1` / `install.sh` | `<DSH_HOME>/profiles/node_modules/dsh-LAN` + 往 `profiles/web/cordis.patch.yml` 写安装块 | profile 补丁热加载；client 半边刷新浏览器即生效 |
-| bundle 路径 | `dsh plugin --profile web add link:<本目录>` | 依赖包管理 | 需重启 `dsh web` |
+| **bundle 路径（唯一）** | 应用内 Plugins 页输入 `dsh-lan-tool`；或 `dsh plugin --profile desktop add <spec>` | `<DSH_HOME>/profiles/<profile>/node_modules/dsh-lan-tool` + 写回 profile `package.json` 的 `dsh.profile.bundles` | 官方装载管线；node 半边改动需重启 `dsh web`/桌面版 |
 
-**两条路径同时使用会冲突**（重复的 `webserver` override 与重复的 `dsh-lan` 行）。本机当前用的是补丁路径，安装块已在 `%USERPROFILE%\.dsh\profiles\web\cordis.patch.yml`，**不要再跑 install 脚本**，直接同步文件即可。
+- `dsh-plugin-manager` 的 `reconcile()`（`@deepseek-ai/dsh-plugin-manager/lib/types/operations.js`）会把带 `dsh.bundle` 的新依赖自动追加进 `dsh.profile.bundles`。
+- CLI 需要**先退出桌面版**（`requireDesktopProfile` 只检查 profile 有没有初始化过，"fully quit"只是文案；真正的风险是运行中改写 `node_modules` 在 Windows 上被占用）。
+- **旧的"补丁路径"（把包拷进 `profiles/node_modules` + 正则改 profile 补丁）已随 1.4.0 的安装脚本一起删除，不要恢复**：那套写法必须与 plugin-manager 抢写同一个 YAML 文件，而且在 0.2.0 里 `webServer.register()` 对重复路由直接抛异常。
+- 装/卸载开关也可用 `writePluginEnabled` 的产物（`@deepseek-ai/dsh-plugin-manager/lib/types/patch.js`：按 **id + 可选 name** 匹配 profile 补丁里的覆盖行，匹配不到就**追加**一条 `{id, disabled}`）。所以覆盖行的 `id`/`name` 必须与新包名一致，改名时别只改一半。
 
-### 本机更新流程（改完代码）
+### 2.1 本机（作者机）开发循环
+
+本机状态：桌面版 0.2.0-rc.2，`DSH_HOME=C:\Users\MyBook\.dsh`，活动 profile = `desktop`（`profiles/` 下只有它），GUI 在 `http://127.0.0.1:19387`，端口由桌面启动器硬编码传入。
 
 ```powershell
-$src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\node_modules\dsh-LAN'
+$src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\desktop\node_modules\dsh-lan-tool'
 Copy-Item "$src\lib\client.js" "$dst\lib\client.js" -Force
-Copy-Item "$src\package.json"  "$dst\package.json"  -Force
-# 逐个 Get-FileHash 比对，确认 parity
+Copy-Item "$src\lib\index.js"  "$dst\lib\index.js"  -Force
+Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个比对 parity
 ```
 
-- **只改 `lib/client.js`（浏览器半边）→ 不需要重启 `dsh web`**：服务端对 bundle 是**启动时读一次并缓存**（`client-modules.initialBundleSnapshot`），只有 `client-hmr` 每 500ms 的 stat 轮询发现 `lib/client.js` 变化后调 `rebuilt(id)` 才会重读并重算 rev。所以改完要等一下，**用 `/plugins/events`（SSE）里图帧的 `"id":"dsh-LAN","rev":…` 核对**服务端真正在广告的 rev；HTML 里的 `rev` 是启动时定型的，可能是旧值，别只信它。确认后在**新标签页/刷新**里验证（bundle 响应是 `immutable` 长缓存，旧文档内的 URL 不会自己换新字节）。
-- **改了 `lib/index.js`（node 半边）→ 必须重启 `dsh web`**：node 半边在进程内存里，热加载只重载补丁层。**注意：本机 `dsh web` 进程承载着当前会话，不要随手杀它**（会掐断自己），先和用户确认。
-- `package.json` 里 `dsh.client.inject` 的改动属于启动时组装的 manifest 元数据，下次启动 `dsh web` 才反映到 HTML 的 `inject` 列表；不影响运行时行为（运行时等待哪些服务由 `lib/client.js` 的 `exports.inject` 决定）。
+- **只改 `lib/client.js`（浏览器半边）→ 不需要重启**：服务端对 bundle 是**启动时读一次并缓存**（`client-modules.initialBundleSnapshot`），只有 `client-hmr` 每 500ms 的 stat 轮询发现 `lib/client.js` 变化后调 `rebuilt(id)` 才会重读并重算 rev。用 `/plugins/events`（SSE）里图帧的 `"id":"dsh-lan-tool","rev":…` 核对服务端真正在广告的 rev；HTML 里的 `rev` 是启动时定型的，可能是旧值，别只信它。确认后在**新标签页/刷新**里验证（bundle 响应是 `immutable` 长缓存，旧文档内的 URL 不会自己换新字节）。
+- **改了 `lib/index.js`（node 半边）→ 必须重启 `dsh web`/桌面版**：node 半边在进程内存里，热加载只重载补丁层。**本机 `dsh web` 进程可能正承载着你用的会话，不要随手杀**，先和用户确认。
+- `package.json` 里 `dsh.client.inject` 的改动属于启动时组装的 manifest 元数据，下次启动才反映到 HTML 的 `inject` 列表；运行时等待哪些服务由 `lib/client.js` 的 `exports.inject` 决定。
 - 版本号：**改任何行为都顺手升 `package.json.version`**（本项目按 1.x.y 走）。
 
 ---
 
-## 3. 客户端半边必须知道的运行时事实（0.1.5-rc.1 实测）
+## 3. 客户端半边必须知道的运行时事实（0.2.0-rc.2 实测）
 
 ### 3.1 服务名 ≠ 包名
 
-`exports.inject` 里写的是**服务名**，不是包名。写包名会让 fiber 永远 pending，整个客户端半边静默不加载。HTML manifest 里的 `inject: [...]` 才是包名列表（由 `dsh.client.inject` 生成）。
+`exports.inject` 里写的是**服务名**，不是包名。写包名（或不存在的服务名）会让 fiber 停在 `pending`；0.2.0 的前端启动审计会遍历全部 entry 并把 pending 的列进 `web boot: N entries did not activate`，外壳随即渲染整屏 **「Failed to load plugins」**——是**硬失败**，不是"半边静默不加载"。HTML manifest 里的 `inject: [...]` 才是包名列表（由 `dsh.client.inject` 生成）。
 
 当前 `exports.inject`：
 
 ```js
-["slots", "locale", "connection", "workspaces", "uiWorkspace", "layout", "settingsScope"]
+["slots", "locale", "connection", "workspaces", "uiWorkspace", "layout"]
 ```
 
-- `settingsScope` 在当前版本无人 `provide`；保留它意味着 fiber 会等这个服务。**不要**因为「看起来没人提供」就删掉，删之前先确认 `lanHostMode()` 调用链是否还依赖它。
-- 新增服务依赖时**同时**改两处：`exports.inject`（服务名，运行时真正等待）与 `package.json` 的 `dsh.client.inject`（包名，保证加载序）。
+**不要**再往这里加 `settingsScope`（0.2.0 全树 0 处提供；加上就是整屏 Failed to load plugins）。
+
+新增服务依赖时**同时**改两处：`exports.inject`（服务名，运行时真正等待）与 `package.json` 的 `dsh.client.inject`（包名，保证加载序）。`dsh.client.inject` 在 schema 层只被校验"是不是字符串数组"（`dsh-client-modules/lib/index.js` 的 `parseDshClient`），按包名查图时**查不到就静默跳过** ⇒ 写错不报错，只是加载序不再被保证。
 
 ### 3.2 目录能力在 `uiWorkspace`，不在 `workspaces`
 
@@ -69,17 +91,17 @@ Copy-Item "$src\package.json"  "$dst\package.json"  -Force
 
 | 服务名 | 提供者 | 能力 |
 |---|---|---|
-| `uiWorkspace` | `@deepseek-ai/dsh-client-ui-workspace`（`super(ctx,"uiWorkspace")`） | `listDirectory(path?, signal?)` / `createDirectory(path,name)` / `pickDirectory()` / 会话与工作区导航 |
-| `workspaces` | `@deepseek-ai/dsh-api-workspace-controller`（`super(ctx,"workspaces")`） | 只有 `create / rename / delete / insertBefore / archiveSession / insertSessionBefore` |
+| `uiWorkspace` | `@deepseek-ai/dsh-client-ui-workspace` | `listDirectory(path?, signal?)` / `createDirectory(path,name)` / `pickDirectory()` / 会话与工作区导航 |
+| `workspaces` | `@deepseek-ai/dsh-api-workspace-controller` | 只有 `create / rename / delete / insertBefore / archiveSession / insertSessionBefore` |
 | `slots` | `@deepseek-ai/dsh-client-ui-renderer` 的 SlotRegistry | 插槽注册/查询/订阅 |
 | `connection` | `@deepseek-ai/dsh-client-connection` | `connection.api.postJson(...)`、`connection/reset` 事件 |
 
-官方 `dsh-client-ui-directory-picker-browse` 注入的就是 `uiWorkspace`。**任何目录枚举/新建目录调用都必须走 `uiWorkspace`**，`workspaces` 只能作为旧版回退。
+官方 `dsh-client-ui-directory-picker-browse` 注入的就是 `uiWorkspace`。**任何目录枚举/新建目录调用都必须走 `uiWorkspace`**，`workspaces` 只能作为旧版回退（`pickerBrowse()` 就是按这个顺序取的）。
 
 ### 3.3 插槽（slot）机制要点
 
 - `single` 类插槽**同一 priority 只能有一个注册**，第二个注册会 **throw** 并让那个插件的 apply 失败；不同 priority 可共存，`priority` **升序取第一个未退位者渲染（lowest renders）**。
-- 本插件用 `priority: -1000` + `registrant: "dsh-LAN"` 影子覆盖官方选择器（官方在 0），覆盖两个洞：`conversation.hero.workspace.directoryFlow` 与 `sidebar.workspaces.directoryFlow`。**v71 起本机 loopback 也覆盖**。
+- 本插件用 `priority: -1000` + `registrant: "dsh-lan-tool"` 影子覆盖官方选择器（官方在 0），覆盖两个洞：`conversation.hero.workspace.directoryFlow` 与 `sidebar.workspaces.directoryFlow`。**v71 起本机 loopback 也覆盖**。
 - entry 的注入面**按 entry 身份缓存**：同一次注册内 `props.listDirectory` / `props.t` 引用稳定，`useEffect` 依赖数组不会因父组件重渲染而抖动。真正的抖动来源只有「entry 被销毁重建」。
 - 渲染期抛异常 → 错误边界 `reportEntryError(..., { abdicate: true })` → **该 entry 从 cell 退位**（不再渲染）→ 若看护守卫只看「弹窗在不在 DOM 里」，它会把 entry 重新注册 → 崩溃循环 ⇒ 用户看到「界面不断刷新」。**这是 1.3.1 修复的机制，写新代码时不要再制造同样形态。**
 - `document.querySelector(".dshLanP_overlay") !== null` 只能证明「上一帧渲染成功」，不能证明「本次渲染不会崩」。看护必须另有崩溃退避（见 `pickerHealth` 与 `PICKER_SEAT_STABLE_MS`）。
@@ -89,21 +111,70 @@ Copy-Item "$src\package.json"  "$dst\package.json"  -Force
 - 所有 `props.listDirectory(...)` 调用**必须**走 `callListDirectory()`：它把「方法不存在」这类同步 TypeError 转成 rejected promise，避免在 render 阶段（children 是急切构造的）炸掉整个 slot entry。加新调用点时照抄。
 - 移动端适配是**纯 DOM/CSS 注入**（`mobileAdapt`），只依赖官方 class 名的哈希后缀（`[class$="_frame"]` 这类选择器）。官方换 hash 前缀不影响它，但**改语义名会**；改动前先确认官方对应包的 class 名。
 - `installLanFetchReroute()` 包了全局 `window.fetch`，`wrapApi()` 包了 `connection.api.postJson`；两者都有 `__dshLanWrapped` / `lanFetchWrapped` 幂等标记。新增网络调用不要绕过 `isLoopback()` 判断（本机必须走原生路径）。
+- 局域网浏览器上**官方设置栈不可用是有意为之**：`dsh-client-ui-settings` 的 `persistence` 在 `apply()` 里按 `ctx.remote.$host.isLoopback` 取一次性常量，多个对象在**构造期**就据此决定是否 `subscribe`/`derive`，而 `dsh-client-locale` / `dsh-client-ui-chat` 的 README 明说这是 deliberate。**不要**试图"翻开关"（1.3.x 的 `lanHostMode()` 就是这么干的，已删）；卡片文案已改为"设置项请在主机上修改"。
+
+### 3.5 开关 / 绑定 / 补丁的硬约束（最容易写错的一节）
+
+**0.2.0 的补丁语义**：补丁对目标是 `target[key] = value`，`config` 是**整块替换**，不是深合并；`webserver` 的 schema 里 `host`/`port` 是 `.required()`、`compression*` 有默认值，而 **`DEFAULT_COMPRESSION = "none"`**（`@deepseek-ai/dsh-host-webserver/lib/index.js`）。
+
+⇒ **任何一条 `- id: webserver / config:` 覆盖必须重述全部五个键**（`host`、`port`、`compression`、`compressionLevel`、`compressionThresholdBytes`）。少写 `port` ⇒ 配置校验失败（fiber FAILED，比丢 gzip 更糟）；少写三键 ⇒ 静默丢 gzip（页面变慢，不报错）。
+
+本插件当前的设计（选项 A）：
+
+- **bundle 补丁里完全没有 `webserver` 行** ⇒ "关"就是"没有任何覆盖"，官方兜底 `127.0.0.1` + 官方 gzip 全部保留。官方那唯一一条 `webserver` 行在 `@deepseek-ai/dsh-web-app/cordis.patch.yml`。
+- **"开" = 往活动 profile 的 `cordis.patch.yml` 写一段受管块**（`# --- dsh-lan-tool LAN block ---`，host `0.0.0.0`，五键齐全）；**"关" = 删掉这段块**。唯一写入者是 `setLanBlock()`，模板在 `lanBlock()`，三键取值直接抄当前 `ctx.webServer.config`，不硬编码。
+- **权威状态是真实绑定，不是补丁文件**：`buildStatus().enabled = ctx.webServer.host === "0.0.0.0"`，`desiredEnabled` 才来自补丁块；两者不一致时 `applying: true`（卡片显示"正在生效…"，因为 HMR 有写稳定窗口 + debounce，约 2 秒）。**口令门也按真实绑定判定**（`boundToAllInterfaces(ctx)`），所以"文件已写关、socket 还没重绑"的那一瞬间仍然 fail-safe。
+- `profile` 名字与补丁路径**必须**取 `profileContext`（`@deepseek-ai/dsh/lib/profile-boot-*.js` 在启动时 `provide("profileContext", { name, dir, patchPath, home, … })`）：写死 `"web"` 是 1.3.x 的头号静默 bug（开关读写 `profiles/web/cordis.patch.yml`，而桌面版读 `profiles/desktop/…`）。`cordis.patch.yml` 里 insert 行的 `config.profile` 只是兜底。
+
+### 3.5.1 卸载/停用后的清理（别删掉这段逻辑）
+
+受管块写在 **profile 补丁**里，而补丁文件不属于插件包：把包删掉，补丁仍然会把 socket 绑到 `0.0.0.0`，此时口令门已随插件消失，只剩官方 cookie 门（此前登录过的设备仍能进），防火墙规则也还开着。所以 dispose 时会走 `scheduleDisposalCleanup()`：
+
+- **等 8 秒**再动手（`DISPOSE_CLEANUP_DELAY_MS`），并比对 `applyGeneration`：**热重载会立刻重新 apply 同一行**，从而取消清理；只有"真的没了"（Plugins 页停用 / 卸载 / 包被删）才会等到超时。⇒ 这个机制的**所有失败方向都是"局域网回到关"**，永远不会反向打开。
+- 超时后：删受管块 + 撤防火墙规则，并 log 一行。定时器 `unref()`，不会拖住进程退出；进程在 8 秒内退出（正常关应用）则清理不跑，README 已写手工兜底步骤。
+- 改这段时注意：`setLanBlock(ctx, false, patchPath)` 接收显式路径 —— 定时器回调可能在别的实例已经把 `active` 改掉之后才触发（离线自测里同一进程跑多个 harness 就会这样）。
+
+### 3.6 认证 / 绑定相关（node 半边）
+
+- **唯一闸门**是 `connection.requestRejection(request)`（`@deepseek-ai/dsh-client-connection/lib/index.js`：Host/Origin 围栏 + 浏览器会话），`admit()` 调它，RPC 路由与 fetch/WS 处理器都走 `admit` ⇒ 直接替换实例方法即可覆盖全部入口。
+- `browserAuth.authorizeIndex(req,res)` 只认 `GET /` 上的 token；兑换成功写 authority 绑定的 `HttpOnly; SameSite=Strict` cookie 并 303 到 `./`。`connection.authenticatedUrl(base)` 给 URL 挂进程 token（token 是**进程内存**随机值，磁盘上不存在）。
+- 官方围栏 `isTrustedApiRequest` 只在 loopback 或命中 `trustedHosts` 时放行，而 `trustedHosts` 是**启动时采样一次**的 LAN 字面量（换 IP/后开开关都可能过期）；本插件用口令门在 `requestRejection` 层放行，因此不依赖它（这也是 `/lanapi` 至今保留的原因之一）。
+- `/lanapi`（前缀路由 + 客户端 `/api`→`/lanapi` 改写）在 0.2.0 已**不是必需**（没有按方法的 loopback 专属层），属**可选简化项**；删它需要一次端到端局域网验证（把走它的官方界面都过一遍），**没做那次验证前保留**。
+- HMR 让"改开关即时生效"成立，但有前提：`dsh-hmr` 要求进程带 `--expose-internals`、`profileContext` 已 provide、且 `appReady` 就绪（桌面启动器实测满足；其它启动路径未验证）。卡片保留"正在生效"提示，未生效时提示重启。
 
 ---
 
 ## 4. 修改后的验证方法（必做）
 
-不要只靠读代码。用无头 Chrome + CDP 打真实 GUI（只读：打开弹窗 → 观察 → Esc 取消，**绝不点「打开」按钮**，那会真的创建工作区）：
+不要只靠读代码。三类手段，按成本从低到高：
+
+### 4.1 离线自测（首选，不需要装插件）
+
+node 半边可以直接在 Node 里跑：`DSH_HOME` 指向**临时目录**，把 `node:child_process` 用 `module.registerHooks` 打桩（**保证不会真的动防火墙**），再用假的 `ctx.webServer` / `ctx.get("connection")` 驱动 `/dsh-lan/*` 路由。1.4.0 的验证脚本覆盖：
+
+- **迁移**：预置旧 install/toggle 块 → `apply()` → 断言块被剥除、用户条目保留、YAML 仍可解析、`legacyCleanupDone` 落盘、二次 apply 不重写文件；
+- **开关**：`configure({enabled:true})` → 断言补丁里**恰好一条** `- id: webserver` 且五键齐全；来回切三次后仍只有一条；关掉后该行消失且 YAML 合法；
+- **门禁**：把 mock 的 `webServer.host` 切到 `0.0.0.0`，直接调 `connection.requestRejection(...)`，断言「无口令 403 / loopback 放行 / 伪造 `Host: 127.0.0.1` 被拒 / 正确口令（头或 cookie）放行」；
+- **`[]` 占位符**：profile 补丁只有 `[]` 时开关仍要产出合法 YAML，关掉后回到 `[]`；
+- **路由**：unlock（含限流）、mint（302 到 token URL）、landing、`/lanapi` 口令门、`configure` 仅 loopback。
+
+YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉眼：
+`yaml.parse(text, { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (v) => v }] })`。
+
+### 4.2 静态一致性断言
+
+"写错也不报错"的改动（改名、换 inject 列）必须配断言：四处包名一致；`exports.inject` 是服务名、`dsh.client.inject` 是包名且互不混杂；bundle 补丁里没有 `webserver` 行；`client.js` 里 `settingsScope` / `lanHostMode` 只剩注释。
+
+### 4.3 真实 GUI（无头 Chrome + CDP，只读）
 
 1. 起无头浏览器：`chrome.exe --headless=new --remote-debugging-port=9222 --user-data-dir=<临时目录> about:blank`，用 `http://127.0.0.1:9222/json/new?<url>` + Node 内置 `WebSocket`（Node ≥22）走 CDP。
 2. 必查项：
-   - `Runtime.enable` 收 `Runtime.consoleAPICalled` / `exceptionThrown` → **控制台错误必须为 0**；
-   - 每 50ms 采样 `.dshLanP_overlay`，统计**挂载次数**：稳定应为 1（修复前是每秒 1 次）；
+   - `Runtime.enable` 收 `Runtime.consoleAPICalled` / `exceptionThrown` → **控制台错误必须为 0**（尤其不能有 `Failed to load plugins`）；
+   - 每 50ms 采样 `.dshLanP_overlay`，统计**挂载次数**：稳定应为 1（1.3.1 修复前是每秒 1 次）；
    - 采样弹窗内容：`.dshLanP_entry` 条目数、`.dshLanP_crumb` 面包屑数、盘符 `<select>` 选项（Windows 上应含 `C:\|D:\|…`）、`.dshLanP_err` 必须为空；
-   - 点一个条目下钻，面包屑应 +1 级；
-   - Esc 取消 → 再点「添加工作区」→ 应能再次正常打开，且仍只挂载 1 次；
-   - `Network.enable` 观察 `POST /api/directoryPicker/list` 正常返回（LAN 设备上会经 `/lanapi` 代理）。
+   - 点一个条目下钻，面包屑应 +1 级；Esc 取消 → 再点「添加工作区」→ 应能再次正常打开，且仍只挂载 1 次；
+   - 设置卡片：`GET /dsh-lan/status` 的 `enabled / desiredEnabled / applying / bindHost / warning` 要与 `netstat -ano | findstr <port>` 的**实际绑定**一致；
+   - `Network.enable` 观察 `POST /api/directoryPicker/list` 正常返回（LAN 设备上可能经 `/lanapi` 代理）。
 3. 收尾：停掉无头 Chrome 进程、删临时 profile 与探针脚本，别留在工作区里。
 
 **禁止**：为了让弹窗「看起来正常」而让探针点击「打开」按钮（会落盘创建真实工作区）；在用户的真实浏览器里做写操作。
@@ -112,24 +183,28 @@ Copy-Item "$src\package.json"  "$dst\package.json"  -Force
 
 ## 5. 常见反模式（出现即回退）
 
-- 用 `ctx.workspaces.listDirectory` / `ctx.workspaces.createDirectory`（1.3.1 的根因）。
-- 把 `exports.inject` 写成包名。
+- 用 `ctx.workspaces.listDirectory` / `createDirectory`（1.3.1 的根因）。
+- 把 `exports.inject` 写成包名；或把 `dsh.client.inject` 写成服务名（两个方向都错，而且都不报错）。
+- 改包名时漏掉 `lib/client.js` 的 `id:` 或 `data-plugin`（半边不加载 / 样式删不掉）。
 - 在 `single` 插槽的同一 priority 上注册第二个 entry。
 - 没有退避的座位看护（裸跑 `setInterval(seatIfNeeded, 1000)`）。
 - 直接 `props.listDirectory(...)` 而不加 `callListDirectory()` 兜底。
-- 手动跑 `install.ps1` / `uninstall.ps1` 做日常更新（会重复写补丁块 / 动防火墙）。
+- **写 `webserver` 覆盖却不重述五键**（丢 gzip / 校验失败）。
+- **按"补丁文件里有没有块"判断开关状态**（必须看 `ctx.webServer.host`）；或用 `config.profile ?? "web"` 去找 profile 补丁。
+- 手工编辑 profile 补丁里的 `dsh-lan-tool LAN block`（写入者只有插件自己）；手工恢复安装脚本那套"正则改 YAML"。
+- 试图在局域网页面上"解锁"官方设置栈（`settingsScope` 已不存在，见 §3.4）。
 - 在 README 里堆更新记录或维护须知（约定：README 只作为用户文档；变更与踩坑写进本文件第 7 节或 commit）。
 
 ---
 
-## 5.1 发布（tag 与 GitHub Release）
+## 5.1 发布（tag / GitHub Release / npm）
 
-`.github/workflows/release.yml` 负责「push `v*` tag → 自动建 GitHub Release」，notes 由 tag 区间内的 conventional commit 前缀分节生成（Features/Fixes/Docs/…，与 v1.3.0 的格式一致），用仓库内置 `GITHUB_TOKEN`，不需要 PAT。
+`.github/workflows/release.yml` 负责「push `v*` tag → 自动建 GitHub Release」，notes 由 tag 区间内的 conventional commit 前缀分节生成，用仓库内置 `GITHUB_TOKEN`，不需要 PAT。
 
-- **硬约束**：GitHub 只把 tag 事件派发给「**已存在于默认分支**」的工作流文件。因此该文件落到 `main` 之前推的 tag 永远不会触发——这正是 `v1.0.0` / `v1.2.0` / `v1.3.1` 只有 tag、没有 release 的原因。
-- 补历史的 tag：Actions → release → Run workflow，填 tag 名（`workflow_dispatch` 路径）。
+- **硬约束**：GitHub 只把 tag 事件派发给「**已存在于默认分支**」的工作流文件。因此该文件落到 `main` 之前推的 tag 永远不会触发——这正是 `v1.0.0` / `v1.2.0` / `v1.3.1` 只有 tag、没有 release 的原因。补历史的 tag：Actions → release → Run workflow，填 tag 名。
 - **SSH 密钥只做 git 传输**；Release 对象是 REST API 资源，SSH 创建不了，别在这上面绕。本机也没装 `gh`，没有 PAT/env token。
 - 本机 22 端口被封，`~/.ssh/config` 里用 `Host github.com → HostName ssh.github.com / Port 443` 映射；直接连 `git@github.com:443` 会因 443 是 HTTPS 端口而在 `kex_exchange_identification` 被拒。
+- **npm 占名**：`dsh-lan-tool` 在 2026-10 实测 `registry.npmjs.org` 返回 404（未占用），但"未发布"不等于"被保留"。**改名落地后应尽早 `npm publish`（可先发 0.0.1 占位）锁住名字**；在那之前 README 的"按包名一键安装"只在已发布/本地路径安装下成立。发布需要 npm 凭据（本机没有），别在这上面绕。
 
 ---
 
@@ -137,33 +212,51 @@ Copy-Item "$src\package.json"  "$dst\package.json"  -Force
 
 **这是第二个踩过的坑。它不是本插件代码的缺陷，但每次排查都会撞上，必须记住。**
 
-### 6.1 机制（本机 0.1.5-rc.1 实测）
+### 6.1 机制
 
-- 局域网模式下，**没有凭据的非 loopback 客户端**请求 `GET /` → **302 `/dsh-lan/`**（`lib/index.js:495-510`）；要真正拿到 SPA，请求必须带上 **DSH 自己的会话 cookie**（即 `hasLanCookie(req)` 那条分支）。
-- 那个 DSH 会话 cookie 是 **`HttpOnly; SameSite=Strict`**，由一次**隐藏 fetch 的重定向链**种下（`/dsh-lan/mint` 302 → token URL → `/`；见 `lib/index.js:743-751`，`lib/landing.html:53-64` 有注释说明必须跟随跳转）。
+- 局域网模式下，**没有凭据的非 loopback 客户端**请求 `GET /` → **302 `/dsh-lan/`**（`lib/index.js` 的 `patchedAuthorize`）；要真正拿到 SPA，请求必须带上 **DSH 自己的会话 cookie**。
+- 那个 cookie 是 **`HttpOnly; SameSite=Strict`**，由一次**隐藏 fetch 的重定向链**种下（`/dsh-lan/mint` 302 → token URL → `/`；`lib/landing.html` 有注释说明必须跟随跳转，`redirect:"manual"` 会走不通）。
 - 因此：**只要承载页面的环境把 GUI 当作「跨站第三方内容」，这个 cookie 就会被现代 WebView / 浏览器的跟踪防护丢弃或分区**，链路永远走不完。
-- 后果被 `lib/landing.html:86-96` 的**静默续登**放大：落地页只要在 storage 里看到 `dsh-lan-key`，就立刻 `postUnlock` → `mint` → `window.location.href = "/"`；当 cookie 落不下去时 `/` 又 302 回落地页，落地页又静默续登 → **无限重定向**，用户看到「口令页不断闪烁、无法输入」。
+- 1.3.x 的落地页"有 key 就跳"会把这个放大成**无限重定向**（口令页不断闪烁、无法输入）。**1.4.0 已修**：`lib/landing.html` 用 `sessionStorage` 的 `dsh-lan-mint-hops` 计数，超过 `MAX_HOPS=2` 就停止自动跳转、停在表单并提示"浏览器没有保存登录凭据"。所以环境问题现在最多是"每次都要输口令"，不会再变成"页面无法操作"。
 
 ### 6.2 判定口径与责任划分
 
 | 现象 | 结论 |
 |---|---|
 | 移动端/桌面浏览器正常，**dsh-app（Tauri + iframe）闪烁** | **环境问题（dsh-app 侧）**：同一份插件、同一个服务端，差异只在承载上下文——iframe 里 GUI 是跨站第三方，登录 Cookie 落不下去。 |
-| 顶层浏览器直接开 `http://<IP>:3080` | 正常：顶层文档 = 第一方，`SameSite=Strict` 无障碍。 |
+| 顶层浏览器直接开 `http://<IP>:<端口>` | 正常：顶层文档 = 第一方，`SameSite=Strict` 无障碍。 |
 | 地址填 `127.0.0.1` / `localhost` | **根本不走口令链路**：客户端 `isLoopback()` 为真，服务端 `isLocalRequest()` 也全放行（无口令、无 token）。此时任何异常都与口令页无关，别往这条线查。 |
 
-- **本插件侧该改的（若将来再动）**：`lib/landing.html` 的静默续登不该「有 key 就跳」，应在跳转前确认「这次访问真能进主界面」；连续失败即停止自动跳转，停在表单并提示「凭据无法在本浏览器保存」。这样环境问题最多是「每次都要输口令」，而不是「页面无法操作」。
 - **dsh-app 侧解法（已在其仓库实施）**：不要用 iframe 承载 GUI，改为**每个地址一个独立顶层窗口**（Tauri `WebviewWindow`），顶层文档 = 第一方，口令只需输入一次。
 
 ### 6.3 复现 / 排查手法（只读，勿在用户实例上做写操作）
 
-- 无头 Chrome + CDP：父页面从 `http://localhost:3099`（与目标不同 host）内嵌 `http://<LAN-IP>:3080`，即构造出「跨站 iframe」形态；用 `Target.attachToTarget` 挂到 iframe 的 target 上执行表达式，逐秒采样其 `location.href`、是否存在 `input[type=password]`、`document.cookie`。
+- 无头 Chrome + CDP：父页面从 `http://localhost:3099`（与目标不同 host）内嵌 `http://<LAN-IP>:<端口>`，即构造出「跨站 iframe」形态；用 `Target.attachToTarget` 挂到 iframe 的 target 上执行表达式，逐秒采样其 `location.href`、是否存在 `input[type=password]`、`document.cookie`，以及 `sessionStorage["dsh-lan-mint-hops"]` 是否已到上限。
 - **不要**为了「跑通」而猜或试口令：错误口令下 `POST /dsh-lan/mint` 只会 403（足够确认链路形态）；`dsh-lan-key` 也无法用 JS 伪造成功路径（校验在服务端）。
 - 收尾：停掉无头 Chrome、删临时 profile 与探针脚本。
 
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.0 — 按《重构需求与重构方案》重构：改名、去安装脚本、开关进设置、五键覆盖、升级迁移
+
+对应需求 R1–R4 与坑 K1–K5（方案文档：`重构需求与重构方案.md`）：
+
+- **R1 改名**：`dsh-LAN` → **`dsh-lan-tool`**（包名、仓库名、`insert.name`/`insert.id`、`const name`、客户端 bundle 的 `id:` 与 `data-plugin`、防火墙规则名 `dsh-lan-tool (auto)`）。旧名含大写字母，被 `dsh-plugin-manager` 的 `PACKAGE_NAME` 正则与 npm 双重拒绝；`dsh-lan` / `dsh-lan-access` 已被他人在 npm 占用，故取 `dsh-lan-tool`。
+  - **本轮新增的改名点（原方案漏了）**：`lib/client.js` 第 2 行 `window.__ModuleLoader__.load({ id })` 的 id **必须等于包名**（`arrive()` 要求 `factories.has(row.id)`），漏改 ⇒ 半边不加载；`tag.dataset.plugin` 也必须等于包名（`removeOwnedStyles` 按它删样式）。
+  - 行 `id` 从 `dsh-lan` 改成 `dsh-lan-tool` 是**故意不复用旧 id**：同名 id 的旧行会与 bundle 新行**合并成一个 entry 槽位**且 profile 层后写获胜，那样旧行里的 `name: 'dsh-LAN'`（包已不存在）会让插件的行整个 import 失败 ⇒ 迁移都跑不起来。用新 id 则旧行是独立（会失败）的条目，插件照常加载并在 apply 时把它剥掉。
+- **R2 必须保留的东西**：口令门（`patchedRejection` + `patchedAuthorize`）、`/dsh-lan/mint` 的 token→cookie 静默兑换、`x-dsh-lan-key`、`lib/landing.html`、`unlockAttempts` 限流 —— 这些是"凭 ip+端口、凭密码、无需带 token"的实现本体。
+- **R3 去安装脚本**：`install.ps1` / `install.sh` / `uninstall.ps1` / `uninstall.sh` 全删；`cordis.patch.yml` 只留一条 insert 行并**去掉 `webserver` 覆盖**（选项 A：不写 = 官方 `127.0.0.1` + gzip = 关）。开关写/删活动 profile 补丁里的受管块，热重载即刻重新 bind。
+- **R4 不问口令**：安装过程零密码交互；口令只在设置卡片里设置。
+- **K1**：profile 与补丁路径改从 `profileContext`（`name` + `patchPath`）解析，`config.profile` 退化为兜底。
+- **K2**：唯一写入者 `setLanBlock()` 固定五键，三键取值抄当前 `ctx.webServer.config`；开关来回切三次后补丁里始终只有一条 `- id: webserver` 且 `compression: gzip` 在。
+- **K3**：`exports.inject` 删掉 `settingsScope`，`lanHostMode()` 整体删除（0.2.0 无该服务，且 `persistence` 是构造期一次性常量；DSH 对非 loopback 页面刻意不给设置作用域）。卡片文案改为"局域网可聊天/切换模型与模式；设置项请在主机上修改"。
+- **K5**：卡片在无口令时**拒绝打开开关**并把焦点移到口令框；`buildStatus().warning = "no-password"` 让"已开但无口令"这一状态显式标红（服务端仍允许这种组合，因为它是"先开开关再设口令"的中间态，且此时局域网本来也进不来）。
+- **§4.8 一次性迁移**：剥除旧 install/toggle 块（profile 层永远压过 bundle 层，留着就是"显示关、实际开"）、删除旧防火墙规则名（改名后没有任何代码能碰到它们，会永久放行端口）、`dsh-lan.json` 里落 `legacyCleanupDone` 标记；**口令文件名保持不变**以免丢口令；迁移后一律是"关"，不翻转语义。
+- **`/lanapi` 暂留**：0.2.0 已无按方法的 loopback 专属层，它与客户端 `/api`→`/lanapi` 改写属可选简化项，删除需要一次端到端验证，本轮未做（用户要求不在本机安装），已在上文登记。
+- **卸载安全（本轮新增，方案没提）**：受管块留在 profile 补丁里而包被删掉 = 端口照样绑 `0.0.0.0`、口令门消失、防火墙规则还在。故加了 `scheduleDisposalCleanup()`：dispose 后 8 秒内若本行没有重新 apply（即不是热重载），就删掉受管块并撤防火墙规则；失败方向只会是"回到关"（详见 §3.5.1）。
+- **验证**（离线，未在本机安装）：node 半边自测 72 项（迁移/开关五键/门禁/`[]` 占位/路由/释放/停用清理与热重载取消清理）+ 静态一致性 43 项（名字四处一致、inject 双向、补丁无 `webserver` 行、脚本已删）全绿；`node --check lib/client.js` 通过。
 
 ### 1.3.8 — 移动端「标准模式」等头部动作改为靠左紧跟「轨迹」，间距=官方 tabs gap
 
@@ -184,7 +277,7 @@ Copy-Item "$src\package.json"  "$dst\package.json"  -Force
 - 用户反馈：1.3.6 之后移动端**仍能看到**右上角那个三点按钮，点开是「下载 session 日志」。
 - 它是 `@deepseek-ai/dsh-session-log-export` 的 `SessionLogDownloadHeaderAction`：`Menu` 的 anchor 是 `nL4_yW_moreButton`（`aria-haspopup="menu"`、`aria-label` 取自 `header.more`「更多操作」、图标 `IconEllipsisOutline16`）。源码第 274 行确认它注册进 `conversation.session.header.utilities` —— **正是 `_headerUtilities` 内部**。
 - 所以 1.3.6 之前那条 `[class$="_headerUtilities"]{display:none}` 本来就能藏它（该规则自 v47–v62 的 `819ecdd` 起一直在，且实测确认已随 bundle 下发）。用户仍能看到 ⇒ **实机当时没进入移动端适配状态**：`isMobilePortrait()` 要求竖屏 + 粗指针 + 宽 <1100，横屏/平板/更宽视口都不生效。
-- 修复：把这条也做进「非本机」样式表（`dsh-LAN/nonlocal-header.css`），**不再依赖移动端适配状态**：
+- 修复：把这条也做进「非本机」样式表（`dsh-lan-tool/nonlocal-header.css`），**不再依赖移动端适配状态**：
   - `body.dsh-lan-nonlocal [class$="_headerUtilities"] [class$="_moreButton"]`（主判据，实测全局只匹配这 1 个元素）；
   - 再加一条按**角色**兜底的 `... [class$="_trigger"]:has(svg):where([aria-haspopup="menu"])`，防模块哈希前缀变化。
   - 理由：局域网浏览器把 session 日志下到「错误的机器磁盘」上本来就没意义。
@@ -196,7 +289,7 @@ Copy-Item "$src\package.json"  "$dst\package.json"  -Force
 - **需求 1（非本机隐藏右上角「文件资源管理器 / VS Code / Git Bash」下拉框）**：
   - 那个下拉框是 `@deepseek-ai/dsh-client-ui-open-in-app`，类名 `CAgGvG_split`，注册在**与 session 日志同一个插槽** `conversation.session.header.utilities`（即 `_headerUtilities` 容器）。
   - 判定来源：`/dsh-lan/status` 的 `loopback` 字段（服务端 `isLoopback(req)`，按 **Host 头**算，正好等价于「这个页面是不是从 127.0.0.1 打开的」）。`syncNonLocalPosture()` 拿到后给 `<body>` 加 `dsh-lan-nonlocal`。
-  - **坑（本次踩到）**：这条规则**不能**放进 `mobileAdapt` 的 CSS —— 那段样式表只在竖屏手机模式下注入（`isMobilePortrait()` 为真），而需求恰恰是桌面局域网场景。实测 1280px 下 `mobile-adapt.css` 根本不存在（`tagPresent:false`），规则写了也永远不生效。改为在 `markNonLocalPosture()` 里注入独立样式表 `dsh-LAN/nonlocal-header.css`。
+  - **坑（本次踩到）**：这条规则**不能**放进 `mobileAdapt` 的 CSS —— 那段样式表只在竖屏手机模式下注入（`isMobilePortrait()` 为真），而需求恰恰是桌面局域网场景。实测 1280px 下 `mobile-adapt.css` 根本不存在（`tagPresent:false`），规则写了也永远不生效。改为在 `markNonLocalPosture()` 里注入独立样式表 `dsh-lan-tool/nonlocal-header.css`。
   - 选择器用 `body.dsh-lan-nonlocal [class$="_headerUtilities"] [class$="_split"]`：官方是 `.CAgGvG_split{display:inline-flex}`，靠多一个 `body.` 类提高特异性压过它（在 `mobileAdapt` 之后注入、但顺序不可靠，别只靠顺序）。
 - **需求 2（移动端隐藏 session 日志下载）**：本来就已满足——`web shell` 的 `_headerUtilities{display:none}` 规则在竖屏下隐藏整个 utilities 簇，实测该容器宽为 0，里面的 session 日志按钮（`nL4_yW_moreButton`）一并消失。**桌面端不受影响，仍保留**。
 - **需求 3（移动端底部「N 轮 M 步」居中）**：官方 `StatsPills` 的根类 `bOPqQW_root` 本来就是 `justify-content:center`（flex 行），是我们在 v56 把它覆盖成 `text-align:left` 才变左对齐。v82 改回 `text-align:center`。实测移动端计算值 `text-align:center`、`justify-content:center`、字号 10px、内边距 0，且内容盒居中；桌面端不受影响（仍是官方 13px / 32px 内边距）。

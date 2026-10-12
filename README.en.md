@@ -1,20 +1,22 @@
-# dsh-LAN
+# dsh-lan-tool
 
-dsh-LAN — a plugin that brings the [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI to your local network (password-protected full-featured edition; mobile reuses the official desktop UI with an injected portrait touch adaptation).
+dsh-lan-tool — a plugin that brings the [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI to your local network (password-protected; mobile reuses the official desktop UI with an injected portrait touch adaptation).
 
-> ⚠️ **Version requirement: DSH `0.1.2-rc.1` (`@deepseek-ai/dsh`) and newer (verified up to `0.1.5-rc.1`). Older DSH releases (with `dsh-host-apiproxy` / dotted endpoints) are no longer compatible — please upgrade DSH first.**
+> ⚠️ **Version requirement: `@deepseek-ai/dsh` `0.2.0-rc.2` and newer** (verified on the 0.2.0-rc.2 desktop build). The 0.1.x APIs (`dsh-host-apiproxy`, dotted endpoints, the client-side `settingsScope` service) are no longer compatible — upgrade DSH first.
 
 > 🚀 **Pair it with [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) and [dsh-app](https://github.com/MrMu666/dsh-app) for a better experience.**
 
-Once installed, the Web GUI binds to `0.0.0.0` (all network interfaces) by default and automatically opens the host firewall port (Windows: Windows Defender Firewall Domain + Private; Linux: firewalld / ufw / iptables are tried in order, and a missing firewall tool is treated as "no rule needed"):
+> 📦 **This package is a standard DSH plugin bundle** (it declares `dsh.bundle.patch`), installed through the official plugin mechanism. There are **no install scripts**, the on/off switch lives in **Settings**, and nothing asks for a password at install time.
 
-- ✅ **LAN devices must enter a password before seeing any page**: any device (desktop or phone/tablet) opening `http://<host-ip>:3080` gets a full-screen login gate first and enters only after the password is verified; on a portrait phone the plugin injects a mobile-touch adaptation (big touch targets, 16px input font, safe areas) over the official UI — the same interface as desktop, synced with the host in real time
-- ✅ **Remember password (per device)**: Checking "Remember password" at login stores the password in that browser's localStorage, so the next visit skips it; otherwise it is kept only in the current tab (sessionStorage) and expires when the tab closes
-- ✅ "LAN access" card in Settings → General: toggle + password set/clear + status display
-- ✅ Once unlocked, all features are available: settings, permission presets, credentials, preset management (privileged methods that the official client pins to localhost are re-exposed through the password-protected `/lanapi` proxy channel)
-- ✅ **Every browser sees the exact same conversation**: a single service process holds all session state server-side, and the event stream (`/api/events.mux` WebSocket) pushes identical updates to every connected browser
+Once installed, flip "LAN access" on in Settings and the GUI becomes reachable from the LAN (Windows opens the firewall automatically for Domain + Private; Linux tries firewalld / ufw / iptables in order and treats a missing firewall tool as "no rule needed"):
 
-> 💡 **The simplest way to install: tell DSH to install the dsh-LAN plugin.**
+- ✅ **Off by default**: the bundle writes no `webserver` override at all, so the GUI keeps the official default (loopback-only, gzip intact)
+- ✅ **The switch takes effect live**: it writes/removes a managed override in the *active profile's* `cordis.patch.yml`, which the harness hot-reloads and re-binds — **no restart**
+- ✅ **LAN devices must enter a password before seeing any page**: any device (desktop or phone/tablet) opening `http://<host-ip>:<port>` gets the password page first; the address bar **never shows a token** (the plugin completes the official token→cookie exchange in the background)
+- ✅ **Remember password (per device)**: checking "Remember password" stores it in that browser's localStorage; otherwise it is kept only in the current tab (sessionStorage)
+- ✅ "LAN access" card in Settings → General: toggle + password set/clear + bind/firewall/password status
+- ✅ **No silent exposure without a password**: the switch refuses to turn on until a password exists, and if the GUI is somehow exposed without one the card says so (LAN devices cannot get in)
+- ✅ **Every browser sees the exact same conversation**: a single service process holds all session state server-side and pushes identical events to every connected browser
 
 <div align="center">
 
@@ -26,93 +28,103 @@ Once installed, the Web GUI binds to `0.0.0.0` (all network interfaces) by defau
 
 ## ⚠️ Security notes
 
-- The login gate is **UI-level** protection: people without the password cannot see page content; privileged operations (settings/permissions/credentials) are enforced **server-side** by password checks.
-- Non-privileged APIs (session read/write, etc.) remain open to the LAN at the API layer — the gate mainly stops casual passers-by from opening the page. For stronger API-level lockdown, turn the LAN switch off outside trusted networks.
+- The password gate is enforced **server-side**: every non-loopback request must carry the password (`x-dsh-lan-key` header or session cookie) or it is refused — privileged methods (settings/permissions/credentials) rely on that same gate.
+- **That gate is the whole security boundary.** No password means the LAN is simply unusable (it never degrades into "open without a password"). Anyone who knows the password can read and write all of this DSH's data — enable it only on trusted networks and pick a strong password.
 - Use only on trusted networks (home/office intranet). Turn the switch off on public networks.
+
+## What LAN clients can do (important)
+
+DSH deliberately withholds the settings scope from non-loopback browsers (`persistence` in `dsh-client-ui-settings` is fixed at page load from `isLoopback`; `dsh-client-locale` and `dsh-client-ui-chat` document this as intentional). Therefore, on a LAN device:
+
+| Capability | LAN device |
+|---|---|
+| Chat, model & work-mode switching, workspaces & sessions, history, tasks, approvals, terminal | ✅ available |
+| Settings / permission presets / credentials / preset management pages | ❌ host-only (change them on the host machine) |
+| Workspace directory picker | ✅ the plugin's own dialog (drive dropdown, path jump) |
 
 ## Mobile (portrait phones/tablets)
 
-- Mobile **reuses the official desktop UI** — there is no standalone remote UI anymore (v48 removed `/dsh-lan/ui`). When a phone opens `http://<host-ip>:3080` in portrait, the plugin injects a touch adaptation over the official interface (compact sidebar rail, ≥44px touch targets, 16px input font to prevent iOS focus zoom, safe-area padding); landscape/wide viewports revert automatically.
-- Every capability is identical to desktop: sessions/workspaces/history/live chat/model & mode switching/todo list/approvals & questions/permission switching, all synced with the host in real time.
+- Mobile **reuses the official desktop UI**: when a phone opens `http://<host-ip>:<port>` in portrait, the plugin injects a touch adaptation over the official interface (compact sidebar rail, ≥44px touch targets, 16px input font to prevent iOS focus zoom, safe-area padding); landscape/wide viewports revert automatically.
+- Every available capability is identical to desktop (see the table above): sessions/workspaces/history/live chat/model & mode switching/todo list/approvals & questions/permission switching, all synced with the host in real time.
 
 ### Mobile interaction details
 
 - **Sidebar**: hidden while collapsed — the draggable **whale button** at the top-left is the entry point (its drag position is remembered). Tapping a session row, tapping anywhere else, or **swiping left** collapses it; in the conversation view **swiping right** expands the sidebar directly.
 - **Keyboard**: the page never auto-focuses the composer on load, tapping the whale does not pop the keyboard, and Enter inserts a newline only (sending goes through the send button).
-- **UI details**: lingering official Tooltip bubbles are hidden (e.g. collapse/send black tooltips); the `ask_user_question` card is fully adapted to narrow screens (42px option touch targets); the permission/model two-line layout and the bottom stats bar stay aligned with the composer.
-- **LAN privileged channel**: privileged calls pinned to localhost by the official client (settings/credentials…) are rewritten to the `/lanapi` password channel at the network layer — preset/permission labels now show their localized names on LAN devices.
+- **UI details**: lingering official Tooltip bubbles are hidden; the `ask_user_question` card is fully adapted to narrow screens (42px option touch targets); the permission/model two-line layout and the bottom stats bar stay aligned with the composer.
+- **No password-page flicker**: if the browser cannot keep the login credential (e.g. the page is embedded in a cross-site iframe/WebView, where a `SameSite=Strict` cookie is dropped), the password page stops auto-redirecting after 2 hops and explains the problem instead of looping forever.
 
-## Installation (patch path, no restart required — recommended)
+## Installation
 
-### Windows 11
+### Option 1 — the in-app Plugins page (recommended, one click)
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-# optional:
-powershell -ExecutionPolicy Bypass -File install.ps1 -DshHome C:\Users\me\.dsh -Profile web
-```
+Open the DSH sidebar **Plugins** page and install the package name **`dsh-lan-tool`**. `dsh.profile.bundles` is updated automatically and no restart is needed.
 
-### Linux / macOS
+> This requires the package to be published on npm. If it is not published yet (or you want to install this local checkout), use option 2.
+
+### Option 2 — the CLI (local directory / path / tarball)
 
 ```bash
-./install.sh
-# optional:
-./install.sh --dsh-home "$HOME/.dsh" --profile web
-# the DSH_HOME environment variable is also honored (same as dsh)
+# the local development directory (absolute path)
+dsh plugin --profile desktop add D:\DeepSeek\dsh-LAN
+# or link: / file: / tarball / git forms
+dsh plugin --profile desktop add link:D:\DeepSeek\dsh-LAN
+# once published, the plain package name works too
+dsh plugin --profile desktop add dsh-lan-tool
 ```
 
-The installers (equivalent on both platforms):
+Quit the desktop app before running the CLI (`dsh-desktop-host` says so in its message; it really only checks that the profile was initialized once, but rewriting `node_modules` while the app runs is easily blocked on Windows).
 
-- copy the plugin package to `<DSH_HOME>/profiles/node_modules/dsh-LAN` (on Windows: `%USERPROFILE%\.dsh\profiles\node_modules\dsh-LAN`)
-- write the install block to `<DSH_HOME>/profiles/web/cordis.patch.yml` (bind 0.0.0.0 + plugin mount line)
-- **DSH hot-reloads profile patches**: the running service picks it up immediately, no restart needed; just refresh the browser to see the settings card
-- **Restart `dsh web` after upgrading plugin code**: the node half (`lib/index.js`) lives in process memory and hot reload only reloads the patch layer; the client bundle is picked up by refreshing the browser
+### After installation (same for both options)
+
+1. Open DSH → Settings → General → "LAN access";
+2. **Set an access password** (at least 4 characters);
+3. Then flip the switch — the plugin writes the managed override and the binding hot-reloads; the card shows `0.0.0.0` about 2 seconds later;
+4. Open the `http://<host-ip>:<port>` URL shown in the card from a LAN device and enter the password.
+
+> The desktop build uses port `19387` (pinned by the desktop launcher); plain `dsh web` defaults to `3080`. Trust the port the card displays.
 
 ### Firewall notes
 
-- **Windows**: a Windows Defender Firewall allow rule (Domain + Private) is maintained automatically; without an elevated shell the settings card reports "firewall blocked (needs admin)".
-- **Linux**: an allow rule is maintained via firewalld → ufw → iptables (first available). When no supported firewall tool is found the card reports "firewall not managed", which normally means the port is already reachable. If a firewall is detected but root is missing, it reports that admin rights are needed.
-- On every platform, turning the "LAN access" toggle off falls back to binding `127.0.0.1` — that is the primary security switch.
+- **Windows**: a Windows Defender Firewall allow rule named `dsh-lan-tool (auto)` (Domain + Private) is maintained automatically; without an elevated shell the card reports "firewall blocked (needs admin)".
+- **Linux**: an allow rule is maintained via firewalld → ufw → iptables (first available). When no supported firewall tool is found the card reports "firewall not managed", which normally means the port is already reachable.
+- On every platform, turning the "LAN access" toggle off removes the override and returns to `127.0.0.1` — that is the primary security switch.
 
-### Installation (bundle path, optional)
+## Upgrading (1.3.x → 1.4.0)
 
-```bash
-dsh plugin --profile web add link:<absolute-path-to-this-directory>
-```
+The package was renamed (`dsh-LAN` → `dsh-lan-tool`). Machines that used the old installer scripts are migrated automatically on first activation:
 
-The package declares `dsh.bundle.patch`, so `dsh plugin` automatically adds it to the bundles list. This path requires a service restart to take effect.
+1. **Legacy managed blocks are stripped** from `profiles/<profile>/cordis.patch.yml` (`dsh-LAN install block`, `dsh-LAN toggle block`). The profile patch layer outranks every bundle layer, so leaving them would keep overriding the new composition — that is exactly how "card says off, socket still on 0.0.0.0" happened. After migration the LAN is **off** again; re-enable it from the settings card.
+2. **Legacy firewall rules are removed** (`dsh-LAN (auto)`, `DSH LAN Access (auto)`). The rule name is now `dsh-lan-tool (auto)`, and no code could reach the old names any more — they would have kept the port open invisibly forever.
+3. **The password is kept**: it still lives in `%USERPROFILE%\.dsh\dsh-lan.json` (the filename is unchanged so no password is lost). No need to set it again.
+4. The old `profiles/node_modules/dsh-LAN` directory can be deleted by hand.
 
-## Usage
-
-1. On the host, open Settings → General → "LAN access", make sure the toggle is on, the firewall is allowed, and **set a password** (at least 4 characters);
-2. LAN browser (desktop or phone/tablet): open `http://<host-ip>:3080` → enter the password at the login gate (check "Remember password" to skip it next time);
-3. On a portrait phone the touch adaptation kicks in automatically (same UI as desktop); the sidebar's bottom-left "Lock" button (right above the settings button, same style) logs out at any time;
-4. After the host changes the password, other devices are asked to log in again on their next action (403 returns to the login gate automatically).
+Manual fallback (if the migration never ran): delete both managed blocks from `profiles/<profile>/cordis.patch.yml` and toggle LAN off/on once in the settings card.
 
 ## Uninstall
 
-Windows:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File uninstall.ps1
-```
-
-Linux / macOS:
+Remove the plugin from the Plugins page, or:
 
 ```bash
-./uninstall.sh
-# optional: ./uninstall.sh --dsh-home "$HOME/.dsh" --profile web --port 3080
+dsh plugin --profile desktop remove dsh-lan-tool
 ```
 
-Removes the patch block, firewall rules, and the package copy; takes effect via hot reload, no restart needed.
+On deactivation the password gate goes away immediately, and **the managed bind override is removed by the plugin itself about 8 seconds later**, together with the firewall rule. That window exists to tell a hot reload (which immediately re-applies the plugin and cancels the cleanup) apart from a real removal, so a normal uninstall returns the GUI to **off**.
+
+Two cases need a manual check (the cleanup never ran):
+
+- DSH was quit immediately after the uninstall, or the package directory was deleted by hand;
+- you also want the password gone.
+
+Manual cleanup in three steps: delete `%USERPROFILE%\.dsh\dsh-lan.json`; make sure `profiles/<profile>/cordis.patch.yml` no longer contains a `dsh-lan-tool LAN block` section (delete the whole section if it is there); and confirm `netsh advfirewall firewall show rule name="dsh-lan-tool (auto)"` matches nothing (if it does, `netsh advfirewall firewall delete rule name="dsh-lan-tool (auto)"`).
 
 ## How multi-device consistency works
 
-A single DSH service process holds all state: sessions (jsonl persistence + in-memory projections), workspaces, targets, and subagents. Every browser is just a client of the same service: it reads/writes the same state through `/api` RPC and receives the same server-side event pushes over `/api/events.mux` (WebSocket downlink). Desktop and mobile connect to the same state, so any action on either end is visible in real time on all other ends.
+A single DSH service process holds all state: sessions (jsonl persistence + in-memory projections), workspaces, targets, and subagents. Every browser is just a client of the same service: it reads/writes the same state through `/api` RPC and receives the same server-side event pushes over the WebSocket downlink. Desktop and mobile connect to the same state, so any action on either end is visible in real time on all other ends.
 
 ## Credits
 
-Early mobile work referenced [dsh-remote-web-ui from dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui) (standalone lightweight remote UI + token gate); since v48 mobile reuses the official desktop UI with an injected portrait adaptation, keeping the same password model (persistent password + per-device remember + `/lanapi` privileged proxy).
+Early mobile work referenced [dsh-remote-web-ui from dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui) (standalone lightweight remote UI + token gate); since v48 mobile reuses the official desktop UI with an injected portrait adaptation, keeping the same password model.
 
 ## License
 

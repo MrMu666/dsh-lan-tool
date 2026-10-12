@@ -66,16 +66,45 @@ button:disabled{opacity:.5;cursor:default}
 	var remember = document.getElementById("remember");
 	var button = document.getElementById("go");
 	var err = document.getElementById("err");
+	// Bounce guard. A remembered key normally resumes silently: unlock → mint →
+	// "/" → the GUI. When the browser drops the DSH session cookie (it is
+	// HttpOnly + SameSite=Strict, so a cross-site iframe/WebView context cannot
+	// keep it) "/" answers 302 back here and the silent resume would redirect
+	// again — an endless flicker the user cannot type through. Count the hops
+	// this tab has made and stop redirecting after MAX_HOPS, leaving a usable
+	// form plus an explanation. This is an environment problem, not a wrong
+	// password: the fix is to open the page in a real top-level tab.
+	var HOPS_KEY = "dsh-lan-mint-hops";
+	var MAX_HOPS = 2;
+	function hops() {
+		try { return parseInt(window.sessionStorage.getItem(HOPS_KEY) || "0", 10) || 0; } catch (e) { return 0; }
+	}
+	function setHops(value) {
+		try { window.sessionStorage.setItem(HOPS_KEY, String(value)); } catch (e) {}
+	}
+	function land() {
+		var next = hops() + 1;
+		setHops(next);
+		if (next > MAX_HOPS) {
+			button.disabled = false;
+			input.disabled = false;
+			err.textContent = "登录未能完成：本浏览器没有保存登录凭据（Cookie 被阻止或被分区）。请在地址栏直接打开本页（不要用内嵌窗口 / iframe），再输入一次口令。";
+			input.focus();
+			return;
+		}
+		window.location.href = "/";
+	}
 	function attempt() {
 		var value = input.value;
 		if (!value) { err.textContent = "请输入口令"; return; }
+		setHops(0); // a manual attempt gets a fresh redirect budget
 		button.disabled = true;
 		err.textContent = "";
 		postUnlock(value).then(function (ok) {
 			if (!ok) { err.textContent = "口令错误"; button.disabled = false; input.select(); return; }
 			setStoredKey(value, remember.checked);
 			return mint(value).then(function (minted) {
-				if (minted) window.location.href = "/";
+				if (minted) land();
 				else { err.textContent = "登录失败，请重试"; button.disabled = false; }
 			});
 		});
@@ -84,13 +113,13 @@ button:disabled{opacity:.5;cursor:default}
 	input.addEventListener("keydown", function (e) { if (e.key === "Enter") attempt(); });
 	// Silent resume: a remembered key skips the form entirely.
 	var existing = storedKey();
-	if (existing) {
+	if (existing && hops() < MAX_HOPS) {
 		button.disabled = true;
 		postUnlock(existing).then(function (ok) {
 			if (!ok) { button.disabled = false; return; }
 			setStoredKey(existing, !!window.localStorage.getItem(KEY_STORAGE));
 			mint(existing).then(function (minted) {
-				if (minted) window.location.href = "/";
+				if (minted) land();
 				else button.disabled = false;
 			});
 		});
