@@ -1,14 +1,31 @@
 name: release
 
-# Push a v* tag (or run this workflow by hand against an existing tag) and the
-# matching GitHub Release is created for that tag, using the repository's own
-# built-in GITHUB_TOKEN — no personal access token involved.
+# Push a v* tag (or run this workflow by hand against an existing tag) and one
+# tag produces two jobs:
 #
-# IMPORTANT — bootstrap rule: GitHub only dispatches tag events to a workflow
-# file that ALREADY EXISTS ON THE DEFAULT BRANCH. A tag pushed before this file
-# landed on main therefore never fires this run and stays tag-only (that is why
-# v1.0.0 / v1.2.0 / v1.3.1 are tags without releases). For those, use
-# Actions → release → Run workflow and type the tag name.
+#   release      → the matching GitHub Release is created for that tag, using the
+#                  repository's own built-in GITHUB_TOKEN — no PAT involved.
+#   publish-npm  → the same tagged commit is published to npm, authenticated by
+#                  OIDC trusted publishing: NO NPM_TOKEN secret exists anywhere.
+#
+# IMPORTANT — GitHub bootstrap rule: GitHub only dispatches tag events to a
+# workflow file that ALREADY EXISTS ON THE DEFAULT BRANCH. A tag pushed before
+# this file landed on main therefore never fires this run and stays tag-only
+# (that is why v1.0.0 / v1.2.0 / v1.3.1 are tags without releases). For those,
+# use Actions → release → Run workflow and type the tag name.
+#
+# IMPORTANT — npm bootstrap rule: a trusted publisher can only be configured on
+# a package page that ALREADY EXISTS, so the very first version has to be
+# published by hand once (`npm login && npm publish`) before publish-npm can
+# succeed. On npmjs.com → the package → Settings → Trusted Publisher, add
+# GitHub Actions with: owner `MrMu666`, repository `dsh-lan-tool`, workflow
+# filename `release.yml` (filename only, no path), environment EMPTY, allowed
+# action `npm publish`. Until that exists, publish-npm fails with an OIDC 404 —
+# an expected error, not a broken YAML file.
+#
+# Note: publishing must hang off the tag push, NOT off `on: release: [published]`
+# — GitHub never dispatches events that its own GITHUB_TOKEN created, and the
+# release below is created with GITHUB_TOKEN.
 #
 # Also: if the repository has Actions disabled, the run will not even be queued
 # (Settings → Actions → General → Allow all actions).
@@ -116,3 +133,75 @@ jobs:
             $PRERELEASE_FLAG
 
           echo "created: $(gh release view "$TAG" --json url --jq .url)"
+
+  publish-npm:
+    # Only a genuine tag push publishes to npm: a manual workflow_dispatch run is
+    # the documented way to back-fill the GitHub Releases of the OLD tags
+    # (v1.0.0 / v1.2.0 / v1.3.1 …), and those historical versions must never be
+    # pushed onto the registry.
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the OIDC token that npm's trusted publisher verifies
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Set up Node (trusted publishing needs npm >= 11.5.1 / Node >= 22.14)
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Check the package identity against the tag
+        id: pkg
+        run: |
+          set -euo pipefail
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$NAME" != "dsh-lan-tool" ]; then
+            echo "::error::package.json name is '$NAME', expected 'dsh-lan-tool' — refusing to publish"
+            exit 1
+          fi
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match package.json version $VERSION — bump the version or move the tag"
+            exit 1
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip when the registry already has this version
+        id: dup
+        run: |
+          set -euo pipefail
+          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version >/dev/null 2>&1; then
+            echo "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }} is already on npm — nothing to publish"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show what the tarball will contain
+        if: steps.dup.outputs.exists == 'false'
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        if: steps.dup.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          # npm publish authenticates by exchanging this job's OIDC token; there
+          # is no NODE_AUTH_TOKEN here on purpose. Provenance is attached
+          # automatically for a trusted publisher.
+          if [[ "$TAG" == *-* ]]; then
+            echo "prerelease $TAG → 'next' dist-tag, so 'latest' keeps pointing at the newest stable version"
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi

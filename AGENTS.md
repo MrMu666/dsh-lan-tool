@@ -199,12 +199,23 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 ## 5.1 发布（tag / GitHub Release / npm）
 
-`.github/workflows/release.yml` 负责「push `v*` tag → 自动建 GitHub Release」，notes 由 tag 区间内的 conventional commit 前缀分节生成，用仓库内置 `GITHUB_TOKEN`，不需要 PAT。
+`.github/workflows/release.yml` 一个文件管两件事，都由 **push `v*` tag** 触发：
 
-- **硬约束**：GitHub 只把 tag 事件派发给「**已存在于默认分支**」的工作流文件。因此该文件落到 `main` 之前推的 tag 永远不会触发——这正是 `v1.0.0` / `v1.2.0` / `v1.3.1` 只有 tag、没有 release 的原因。补历史的 tag：Actions → release → Run workflow，填 tag 名。
+| job | 做什么 | 凭据 |
+|---|---|---|
+| `release` | 建 GitHub Release，notes 由 tag 区间内的 conventional commit 前缀分节生成 | 仓库内置 `GITHUB_TOKEN`（`contents: write`），不需要 PAT |
+| `publish-npm` | 把该 tag 指向的那次 commit 发到 npm（`needs: release`，即 Release 建成功才发） | **OIDC trusted publishing**（`id-token: write`），**仓库里没有任何 npm secret** |
+
+- **硬约束（GitHub）**：GitHub 只把 tag 事件派发给「**已存在于默认分支**」的工作流文件。因此该文件落到 `main` 之前推的 tag 永远不会触发——这正是 `v1.0.0` / `v1.2.0` / `v1.3.1` 只有 tag、没有 release 的原因。补历史的 tag：Actions → release → Run workflow，填 tag 名。**这种补历史的手工运行不会发 npm**（`publish-npm` 上是 `if: github.event_name == 'push'`）：那批老版本不该被推到 registry 上，而 `workflow_dispatch` 恰好就是给它们用的。
+- **别改成 `on: release: [published]`**：Release 是 `GITHUB_TOKEN` 建的，而 GitHub 明确不派发由 `GITHUB_TOKEN` 产生的事件 ⇒ 那条路永远不触发（除非改用 PAT，而本机没有 PAT）。npm 发布必须挂在 tag push 上。
+- **硬约束（npm，第一次必须先手工发一次）**：trusted publishing 只能配在**已存在的包页面**上，且兑换接口是按包名的（`POST /-/npm/v1/oidc/token/exchange/package/<name>`，见 npm 11 的 `lib/utils/oidc.js`）⇒ 首个版本必须本机 `npm login && npm publish`（`0.0.1` 占位，或直接发 `1.4.0`）把包建出来，然后在 npm 包页 Settings → Trusted Publisher 填：`Owner: MrMu666` / `Repository: dsh-lan-tool` / `Workflow filename: release.yml`（**只写文件名，不写路径**）/ `Environment: 留空` / `Allowed action: npm publish`。三处都区分大小写；配好之前 `publish-npm` 会失败——**这是预期报错，不是 YAML 坏了**。
+- `publish-npm` 的三道守卫（都做成「失败或跳过」，绝不静默发错东西）：包名必须是 `dsh-lan-tool`；`v<package.json version>` 必须等于 tag（不一致直接红灯）；registry 上已有同版本则**跳过**（所以重跑、补跑、给已发布版本重推 tag 都是幂等的）。预发布 tag（含 `-`，如 `v1.5.0-rc.1`）走 `--tag next`，**不动 `latest`**——DSH 装插件解析的是 `latest`，别让它落到 rc 上。
+- **排障要看 verbose**：npm 的 OIDC 失败是**被吞掉的**（`oidc()` 里 `catch` 只写 verbose 日志，然后照常发 → 表现出来的往往是 401/404 而不是"OIDC 失败"）。所以要 `npm publish --loglevel=verbose`，真正的行是 `Failed token exchange request with body message: …`。最常见就是 trusted publisher 没配或 workflow 文件名/owner/repo 对不上。token 兑换靠 `id-token: write` 提供的 `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN`；缺权限时 npm 直接跳过 OIDC（`Skipped because incorrect permissions for id-token`）。
+- **provenance 只对公开仓库自动开**：`oidc()` 里要求 OIDC token 的 `repository_visibility === 'public'` 且包是 public 才会 `opts.provenance = true`；仓库私有时照常发布、只是没有溯源徽章。另外 OIDC 只在 CI 里生效（`ciInfo.GITHUB_ACTIONS` 等），**本机 `npm publish` 永远走普通登录+OTP 路径**，两者不冲突。
+- **回退方案（只在 OIDC 用不了时）**：仓库 secret `NPM_TOKEN` + `env: NODE_AUTH_TOKEN`。注意 npm 已于 2025-12-09 永久吊销 classic token，只能建 granular access token（最长 90 天，需勾 "bypass 2FA"），每季度轮换；能配 OIDC 就别走这条。
 - **SSH 密钥只做 git 传输**；Release 对象是 REST API 资源，SSH 创建不了，别在这上面绕。本机也没装 `gh`，没有 PAT/env token。
 - 本机 22 端口被封，`~/.ssh/config` 里用 `Host github.com → HostName ssh.github.com / Port 443` 映射；直接连 `git@github.com:443` 会因 443 是 HTTPS 端口而在 `kex_exchange_identification` 被拒。
-- **npm 占名**：`dsh-lan-tool` 在 2026-10 实测 `registry.npmjs.org` 返回 404（未占用），但"未发布"不等于"被保留"。**改名落地后应尽早 `npm publish`（可先发 0.0.1 占位）锁住名字**；在那之前 README 的"按包名一键安装"只在已发布/本地路径安装下成立。发布需要 npm 凭据（本机没有），别在这上面绕。
+- **npm 占名**：`dsh-lan-tool` 在 2026-10-12 实测 `registry.npmjs.org` 仍返回 404（未占用），但"未发布"不等于"被保留"。**首次发布（占位或正式）越早越好**；发布前 README 的"按包名一键安装"只在本地路径安装下成立，发布后该说法才真正成立。
 
 ---
 
@@ -257,6 +268,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - **`/lanapi` 暂留**：0.2.0 已无按方法的 loopback 专属层，它与客户端 `/api`→`/lanapi` 改写属可选简化项，删除需要一次端到端验证，本轮未做（用户要求不在本机安装），已在上文登记。
 - **卸载安全（本轮新增，方案没提）**：受管块留在 profile 补丁里而包被删掉 = 端口照样绑 `0.0.0.0`、口令门消失、防火墙规则还在。故加了 `scheduleDisposalCleanup()`：dispose 后 8 秒内若本行没有重新 apply（即不是热重载），就删掉受管块并撤防火墙规则；失败方向只会是"回到关"（详见 §3.5.1）。
 - **验证**（离线，未在本机安装）：node 半边自测 72 项（迁移/开关五键/门禁/`[]` 占位/路由/释放/停用清理与热重载取消清理）+ 静态一致性 43 项（名字四处一致、inject 双向、补丁无 `webserver` 行、脚本已删）全绿；`node --check lib/client.js` 通过。
+- **发布自动化（本轮新增）**：`release.yml` 多了 `publish-npm`——push `v*` tag 就自动发一次 npm，走 OIDC trusted publishing、**仓库里没有任何 npm secret**；三道守卫（包名必须是 `dsh-lan-tool` / `v<version>` 必须等于 tag / registry 上已有同版本则跳过）保证不会静默发错或重复发。首次发布必须先本机手工 bootstrap 一次、以及"npm 会把 OIDC 失败吞进 verbose 日志"这条排障要点，都在 §5.1。
 
 ### 1.3.8 — 移动端「标准模式」等头部动作改为靠左紧跟「轨迹」，间距=官方 tabs gap
 
@@ -328,3 +340,4 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - 根因：`pickerInjected` 从 `ctx.workspaces` 取目录能力 → `TypeError: ctx.workspaces.listDirectory is not a function` → slot entry 被错误边界判退位 → 看护每秒重新注册 → 每秒重挂载。
 - 修复：改为注入 `uiWorkspace`（保留 `workspaces` 旧版回退）；`exports.inject` 与 `dsh.client.inject` 双补声明；`callListDirectory()` 兜底；看护加崩溃退避（5s 内掉座 → 1s/2s/4s… 上限 60s，`connection/reset` 重置）。
 - 实测：修复前 6 秒内挂载 6 次、控制台反复报错；修复后挂载 1 次、61 条目 + 3 盘符、可下钻、Esc 后可重开、控制台 0 错误。
+
