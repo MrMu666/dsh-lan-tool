@@ -59,8 +59,10 @@ DSH deliberately withholds the settings scope from non-loopback browsers (`persi
 
 ### Option 1 — the in-app Plugins page (recommended, one click)
 
-Open the DSH sidebar **Plugins** page and install the package name **`dsh-lan-tool`**. `dsh.profile.bundles` is updated automatically and no restart is needed.
+Open the DSH sidebar **Plugins** page and install the package name **`dsh-lan-tool`**. `dsh.profile.bundles` is updated automatically.
 
+> ⚠️ **After installing (or updating) the plugin, fully quit and reopen the desktop app once.** The plugin's node half (the password gate, the switch and every `/dsh-lan/*` route) is imported once per app run: **reinstalling or upgrading inside a running app leaves the node half on the old code**, while the browser half does hot-reload — a mixed pair. Since 1.4.2 the client reports that mismatch in the settings card and the console (in older versions it showed up as an unexplained password page).
+>
 > This requires the package to be published on npm. If it is not published yet (or you want to install this local checkout), use option 2.
 
 ### Option 2 — the CLI (local directory / path / tarball)

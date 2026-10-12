@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.1 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.4.2 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
@@ -64,6 +64,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 - **只改 `lib/client.js`（浏览器半边）→ 不需要重启**：服务端对 bundle 是**启动时读一次并缓存**（`client-modules.initialBundleSnapshot`），只有 `client-hmr` 每 500ms 的 stat 轮询发现 `lib/client.js` 变化后调 `rebuilt(id)` 才会重读并重算 rev。用 `/plugins/events`（SSE）里图帧的 `"id":"dsh-lan-tool","rev":…` 核对服务端真正在广告的 rev；HTML 里的 `rev` 是启动时定型的，可能是旧值，别只信它。确认后在**新标签页/刷新**里验证（bundle 响应是 `immutable` 长缓存，旧文档内的 URL 不会自己换新字节）。
 - **改了 `lib/index.js`（node 半边）→ 必须重启 `dsh web`/桌面版**：node 半边在进程内存里，热加载只重载补丁层。**本机 `dsh web` 进程可能正承载着你用的会话，不要随手杀**，先和用户确认。
+- **"装了但没重启"是最容易踩的一脚（1.4.1 实测事故）**：插件**在同一个应用进程内被重装/升级时，node 半边不会换成新代码**（浏览器半边会跟着文件热更新）⇒ 出现"一半新一半旧"的混合版本。1.4.1 的客户端因此问不到服务端的 `local` 字段，只能退回按 hostname 猜，于是**桌面端又被口令页盖住**——用户看到的是"新版本没修好"，实际是旧服务端还在跑。1.4.2 起：`/dsh-lan/status` 带 `version`，客户端带 `x-dsh-lan-client` 头，两侧不一致时客户端在设置卡片与控制台明确写出"请完全退出并重启桌面版"，服务端也 log 一行；README 安装步骤已写死"装完完全退出重启"。**排查"修了却没生效"先确认这一条。**
 - `package.json` 里 `dsh.client.inject` 的改动属于启动时组装的 manifest 元数据，下次启动才反映到 HTML 的 `inject` 列表；运行时等待哪些服务由 `lib/client.js` 的 `exports.inject` 决定。
 - 版本号：**改任何行为都顺手升 `package.json.version`**（本项目按 1.x.y 走）。
 
@@ -138,7 +139,8 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 - **"谁是本机"由 TCP 对端决定，绝不由 Host 头决定**（1.4.1 的教训，改这块前先读）：`isLocalRequest(req)` = 对端地址 ∈ {`127.0.0.1`, `::1`} ∪ `localHostAddresses()`（`os.networkInterfaces()` 里本机全部地址，含 IPv6 与 `%zone`，10 秒 TTL 缓存）。**不能用 Host 白名单**：桌面端可能用 `[::1]`（浏览器把 IPv6 字面量报成**带方括号**的形式）、机器名、本机局域网地址，或经 webview/协议改写过的 host 访问自己的 GUI —— 任何白名单都会把主机自己挡在门外。1.4.0 就是这么锁死桌面端的：服务端按 Host 把头判成"非本机"→ 302 到落地页；客户端又按 `location.hostname` 猜（`[::1]` 不在它的名单里）→ 挂上全屏口令层，且因为没设口令把输入框禁用了，主机彻底进不去。**残留取舍**：本机浏览器经 DNS rebinding 域名访问时也算"本机"（与 DSH 官方 `isTrustedApiRequest` 对 loopback 的信任一致）；局域网设备不受影响（对端地址由 TCP 保证，伪造 `Host: 127.0.0.1` 无效）。
 - `buildStatus().local` 是**客户端唯一该用的"我是不是主机"**；`loopback` 退化为"页面是不是用回环域名打开的"，只作展示。主机专属细节（`patchFile` / `profile` / `lanUrls` / 防火墙状态 / `platform` / `enforcement`）只发给 `local === true`。
-- 客户端侧**不许再用 hostname 猜**：`lib/client.js` 的 `detectLocalClient()` 去问服务端（`/dsh-lan/status` 的 `local`），hostname 只作首帧兜底；服务端说"是本机"时还会 `removeGate()` 自愈。历史包袱：客户端那个 `isLoopback()` 已删除（IPv6 回环带方括号是它的头号坑），别再加回来。
+- 客户端侧**不许再用 hostname 猜**：`lib/client.js` 的 `detectLocalClient()` 去问服务端（`/dsh-lan/status` 的 `local`），hostname 只用来初始化"已知本机"。**挂 gate 必须有证据**：只有服务端明确回答 `local === false`（`shouldGate()`）才允许盖住界面；"还没回答 / 探测失败 / 旧服务端没有这个字段"一律视为未知→**不挂**（1.4.1 的教训：拿不准时按 hostname 猜，主机就被自己的 gate 永久盖住）。安全边界始终在服务端，gate 只是体验层。服务端说"是本机"时还会 `removeGate()` 自愈；本机半边旧于 1.4.1 只报 Host 版 `loopback: true` 时也当作本机（桥接）。历史包袱：客户端那个 `isLoopback()` 已删除（IPv6 回环带方括号是它的头号坑），别再加回来。
+- **版本握手**：`/dsh-lan/status` 报 `version`，客户端请求带 `x-dsh-lan-client`；不一致说明"装了没重启"（node 半边没换代码），客户端在设置卡片与控制台写明、服务端 log 一行。
 - 口令门拒绝时会打一行去重日志 `password gate: … — peer=… is not an address of this machine (host=…)`：万一主机又被挡住，这行日志直接指出被判成"非本机"的 peer/host（1.4.0 时这种事故在日志里是完全静默的）。
 - **唯一闸门**是 `connection.requestRejection(request)`（`@deepseek-ai/dsh-client-connection/lib/index.js`：Host/Origin 围栏 + 浏览器会话），`admit()` 调它，RPC 路由与 fetch/WS 处理器都走 `admit` ⇒ 直接替换实例方法即可覆盖全部入口。
 - `browserAuth.authorizeIndex(req,res)` 只认 `GET /` 上的 token；兑换成功写 authority 绑定的 `HttpOnly; SameSite=Strict` cookie 并 303 到 `./`。`connection.authenticatedUrl(base)` 给 URL 挂进程 token（token 是**进程内存**随机值，磁盘上不存在）。
@@ -154,7 +156,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，104 项断言）。它锁定的正是 1.4.1 那条硬规则——**主机自己永不被口令门拦，局域网设备必被拦**：主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403，客户端侧则从真实源码里切出 `isLoopbackHostname`/`detectLocalClient` 动态跑（含 `[::1]` 带方括号这种坑）。**改 `lib/index.js` 的门禁判定或 `lib/client.js` 的 gate 之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，116 项断言）。它锁定的正是那条硬规则——**主机自己永不被口令门拦，局域网设备必被拦**：主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码里切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、**旧服务端（无 `local` 字段）不许挂 gate**、缺少所有字段、探测失败、版本不一致等情形。**改 `lib/index.js` 的门禁判定或 `lib/client.js` 的 gate 之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -265,6 +267,18 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.2 — "装了没重启"的混合版本不再变成口令页 + 拿不准就不挂 gate
+
+- **现象**（用户实机，同样是桌面端）：装好 1.4.1、**没有重启应用**就直接启用，口令页**又**盖在 DSH 界面之上。
+- **机制**（这一条比修 bug 本身更重要）：**同一个应用进程内重装/升级插件，node 半边不会换成新代码**（客户端半边会跟着文件热更新）⇒ 1.4.1 的客户端去问服务端"我是不是本机"，而旧服务端**根本不返回 `local` 字段**；1.4.1 的客户端在这种情况下退回按 `location.hostname` 猜 → 桌面窗口的 hostname 不是它认识的回环名 → 挂 gate。**是"一半新一半旧"，不是新版本没修好。**
+- **修复**：
+  - 客户端**拿不准就不挂 gate**：新增 `shouldGate()`，只有服务端**明确**回答 `local === false` 才允许挂；"没回答 / 探测失败 / 旧服务端没有该字段"一律视为未知→不挂（`mountGate()` 自身也要求 `shouldGate()`，3 处 403 兜底路径与启动路径全部改用它）。gate 只是体验层，安全边界始终在服务端。
+  - **桥接旧服务端**：`local` 缺失但 Host 版 `loopback === true` 时按本机处理（旧服务端的 Host 判定对 `[::1]` 是能过的，因为它会剥方括号）。
+  - **版本握手**：node 半边新增 `PLUGIN_VERSION`（与 package.json 同步）并在 `/dsh-lan/status` 返回 `version`；客户端请求带 `x-dsh-lan-client` 头。不一致时：客户端设置卡片显示"插件已更新到 X，但服务端仍在运行 Y，请完全退出并重启桌面版"、控制台 warn、gate 若已挂出则直接把这句话作为提示；服务端也 log 一行。
+  - **诊断留痕**：`/dsh-lan/status`（仅本机可见）新增 `seenHosts`——最近 12 组 `host · peer → 是否判为本机`，下次"为什么这台机器被挡"直接读出来，不用再猜桌面窗口用的是哪个名字。
+  - **README（中/英）**：安装步骤写明"装完/更新后**完全退出并重启**桌面版"。
+- **验证**：`npm test` **116 项全绿**（新增：旧服务端无 `local`、无任何 locality 字段、探测失败三种"未知"情形均不挂 gate；`loopback: true` 桥接；版本不一致会被点名；status 带 `version`/`seenHosts` 且局域网设备拿不到 `seenHosts`；两个 `PLUGIN_VERSION` 与 package.json 一致）。
 
 ### 1.4.1 — 桌面端被自己的口令门挡住（"本机永远不需要口令"）
 

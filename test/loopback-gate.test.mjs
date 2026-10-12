@@ -271,19 +271,27 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 
 // ── H. client half: static shape of the gate decisions ─────────────────────
 {
-  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
-  check('H no bare isLoopback() call site remains', !/isLoopback\(\)/.test(src));
-  check('H the gate asks the server first', src.includes('if (await detectLocalClient()) return;'));
-  check('H mountGate refuses when the server says local', /function mountGate\(\) \{\r?\n\t+if \(clientIsLocal\(\)/.test(src));
-  check('H a wrong gate self-heals', src.includes('if (localClient === true) removeGate();'));
-  check('H card uses the server flag', src.includes('data.local === true'));
-  check('H posture uses the server flag', src.includes('markNonLocalPosture(await detectLocalClient())'));
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  const server = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  check('H no bare isLoopback() call site remains', !/isLoopback\(\)/.test(client));
+  check('H the gate asks the server first', client.includes('if ((await detectLocalClient()) !== false) return;'));
+  check('H mountGate needs an explicit remote verdict', client.includes('if (!shouldGate() || gateRoot !== null) return;'));
+  check('H every 403 path uses the evidence-only helper', !client.includes('if (!clientIsLocal()) mountGate();') && (client.match(/if \(shouldGate\(\)\) mountGate\(\);/g) || []).length === 3);
+  check('H a wrong gate self-heals', client.includes('if (localClient === true) removeGate();'));
+  check('H card uses the server flag', client.includes('data.local === true'));
+  check('H posture uses the server flag', client.includes('markNonLocalPosture(await detectLocalClient())'));
+  // The two halves must agree on the version they report, or the handshake lies.
+  check('H server PLUGIN_VERSION matches package.json', server.includes(`const PLUGIN_VERSION = "${pkg.version}";`));
+  check('H client PLUGIN_VERSION matches package.json', client.includes(`const PLUGIN_VERSION = "${pkg.version}";`));
+  check('H the client announces its version to the server', client.includes('"x-dsh-lan-client": PLUGIN_VERSION'));
+  check('H the server reports a mismatch once', server.includes('WARNING: browser half is'));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
 {
   const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
-  const start = src.indexOf('function isLoopbackHostname()');
+  const start = src.indexOf('const PLUGIN_VERSION');
   const stop = src.indexOf('function storedKey()');
   const slice = src.slice(start, stop);
   const scope = (hostname, fetchImpl) => {
@@ -291,7 +299,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
     const api = new Function(
       'window',
       'removeGate',
-      `${slice}\nreturn { isLoopbackHostname, detectLocalClient, clientIsLocal, decided: () => localClient };`,
+      `${slice}\nreturn { isLoopbackHostname, detectLocalClient, clientIsLocal, shouldGate, versionMismatchLine, decided: () => localClient };`,
     )({ location: { hostname }, fetch: fetchImpl }, () => { gates.removed += 1; });
     return { ...api, gates };
   };
@@ -311,20 +319,52 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('I a machine name is not a hint', scope('desktop-o6uev9g', boom).isLoopbackHostname() === false);
 
   const hostBehindName = scope('desktop-o6uev9g', statusOk({ local: true }));
-  check('I unknown hostname does not gate when the server says host', hostBehindName.clientIsLocal() === false);
+  check('I unknown hostname does not gate when the server says host', hostBehindName.clientIsLocal() === false && hostBehindName.shouldGate() === false);
   check('I server verdict overrides the hostname hint', (await hostBehindName.detectLocalClient()) === true);
   check('I a wrongly decided gate is removed again', hostBehindName.gates.removed === 1);
 
   const lan = scope('192.168.1.50', statusOk({ local: false }));
-  check('I a LAN device still gates', (await lan.detectLocalClient()) === false);
+  check('I a LAN device still gates', (await lan.detectLocalClient()) === false && lan.shouldGate() === true);
   check('I a LAN device keeps its gate', lan.gates.removed === 0);
 
+  // The 1.4.1 regression: a node half older than 1.4.1 answers without `local`.
+  // The client must NOT fall back to guessing — that covered the host's GUI.
+  const staleServer = scope('desktop-o6uev9g', statusOk({ loopback: false, version: '1.4.0' }));
+  check('I a stale node half never gates on the hostname hint', (await staleServer.detectLocalClient()) === null && staleServer.shouldGate() === false);
+  check('I a stale node half is named in the UI', String(staleServer.versionMismatchLine()).includes('1.4.0'));
+  const staleLoopbackHost = scope('desktop-o6uev9g', statusOk({ loopback: true, version: '1.4.0' }));
+  check('I an old Host-based loopback answer bridges to local', (await staleLoopbackHost.detectLocalClient()) === true);
+  const emptyAnswer = scope('desktop-o6uev9g', statusOk({}));
+  check('I an answer without any locality field never gates', (await emptyAnswer.detectLocalClient()) === null && emptyAnswer.shouldGate() === false);
+
   const offline = scope('192.168.1.50', boom);
-  check('I status unreachable → the hostname hint still gates a LAN-looking page', (await offline.detectLocalClient()) === false);
+  check('I status unreachable → unknown, never a gate', (await offline.detectLocalClient()) === null && offline.shouldGate() === false);
   check('I an unreachable probe is not cached (a later call retries)', offline.decided() === null);
 
   const offlineLoopback = scope('127.0.0.1', boom);
   check('I status unreachable never gates a loopback page', (await offlineLoopback.detectLocalClient()) === true);
+}
+
+// ── J. node half: version + request-host diagnosis in the status payload ───
+{
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const h = makeHarness({ bindHost: '0.0.0.0' });
+  h.connection.requestRejection(makeReq({ peer: '127.0.0.1', host: '[::1]:19387' }));
+  h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }));
+  const status = h.routes.get('exact /dsh-lan/status');
+
+  const localRes = makeRes();
+  await status.handler(makeReq({ peer: '127.0.0.1', host: '[::1]:19387' }), localRes);
+  const localBody = json(localRes);
+  check('J status carries the node-half version', localBody.version === pkg.version, `got ${localBody.version}`);
+  // The ledger is module-global and capped (first dozen distinct pairs), so this
+  // asserts its shape — which names/peers were judged, and how — not a count.
+  check('J host sees which names/peers were judged', Array.isArray(localBody.seenHosts) && localBody.seenHosts.length > 0 && localBody.seenHosts.every((e) => typeof e.request === 'string' && typeof e.local === 'boolean' && typeof e.count === 'number'), JSON.stringify(localBody.seenHosts));
+
+  const remoteRes = makeRes();
+  await status.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }), remoteRes);
+  const remoteBody = json(remoteRes);
+  check('J LAN device gets the version but not the host diagnosis', remoteBody.version === pkg.version && remoteBody.seenHosts === undefined);
 }
 
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);
