@@ -111,6 +111,23 @@ button:disabled{opacity:.5;cursor:default}
 	}
 	button.addEventListener("click", attempt);
 	input.addEventListener("keydown", function (e) { if (e.key === "Enter") attempt(); });
+	// This page is for LAN devices only. Two states need saying out loud:
+	// - the host machine itself: no password is ever required (1.4.1), so send it
+	//   straight into the GUI instead of showing a form it must not fill in;
+	// - no password configured on the host: a LAN device cannot get in at all, so
+	//   explain that rather than offering a form that cannot succeed.
+	window.fetch("/dsh-lan/status", { cache: "no-store" }).then(function (r) {
+		return r.ok ? r.json() : null;
+	}).then(function (data) {
+		if (!data) return;
+		if (data.local === true) { land(); return; }
+		if (data.passwordSet !== true) {
+			document.querySelector(".s").textContent = "主机尚未设置访问口令，暂时无法从局域网进入。请在主机上打开「设置 → 局域网访问」设置口令后再试。";
+			input.disabled = true;
+			remember.disabled = true;
+			button.disabled = true;
+		}
+	}).catch(function () {});
 	// Silent resume: a remembered key skips the form entirely.
 	var existing = storedKey();
 	if (existing && hops() < MAX_HOPS) {

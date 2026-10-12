@@ -12,7 +12,8 @@ Once installed, flip "LAN access" on in Settings and the GUI becomes reachable f
 
 - ✅ **Off by default**: the bundle writes no `webserver` override at all, so the GUI keeps the official default (loopback-only, gzip intact)
 - ✅ **The switch takes effect live**: it writes/removes a managed override in the *active profile's* `cordis.patch.yml`, which the harness hot-reloads and re-binds — **no restart**
-- ✅ **LAN devices must enter a password before seeing any page**: any device (desktop or phone/tablet) opening `http://<host-ip>:<port>` gets the password page first; the address bar **never shows a token** (the plugin completes the official token→cookie exchange in the background)
+- ✅ **LAN devices must enter a password before seeing any page**: a device on the network (desktop or phone/tablet) opening `http://<host-ip>:<port>` gets the password page first; the address bar **never shows a token** (the plugin completes the official token→cookie exchange in the background)
+- ✅ **The host machine never needs a password**: opening the GUI on the host itself (desktop app or browser — via `127.0.0.1`, `localhost`, `[::1]`, the machine name or the host's own LAN address) goes **straight in**, with no password page. The test is the **TCP peer address** (loopback or one of this machine's own addresses), not the hostname the page used — which is why the desktop app can never be locked out by its own gate (the bug fixed in 1.4.1).
 - ✅ **Remember password (per device)**: checking "Remember password" stores it in that browser's localStorage; otherwise it is kept only in the current tab (sessionStorage)
 - ✅ "LAN access" card in Settings → General: toggle + password set/clear + bind/firewall/password status
 - ✅ **No silent exposure without a password**: the switch refuses to turn on until a password exists, and if the GUI is somehow exposed without one the card says so (LAN devices cannot get in)
@@ -28,7 +29,7 @@ Once installed, flip "LAN access" on in Settings and the GUI becomes reachable f
 
 ## ⚠️ Security notes
 
-- The password gate is enforced **server-side**: every non-loopback request must carry the password (`x-dsh-lan-key` header or session cookie) or it is refused — privileged methods (settings/permissions/credentials) rely on that same gate.
+- The password gate is enforced **server-side**: a request from another machine (i.e. the TCP peer is neither loopback nor one of the host's own addresses) must carry the password (`x-dsh-lan-key` header or session cookie) or it is refused — privileged methods (settings/permissions/credentials) rely on that same gate. Requests from the host machine itself are always admitted, whatever hostname they use; that is deliberate, so the desktop app can never be locked out.
 - **That gate is the whole security boundary.** No password means the LAN is simply unusable (it never degrades into "open without a password"). Anyone who knows the password can read and write all of this DSH's data — enable it only on trusted networks and pick a strong password.
 - Use only on trusted networks (home/office intranet). Turn the switch off on public networks.
 

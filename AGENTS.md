@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.0 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.4.1 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
@@ -110,7 +110,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 - 所有 `props.listDirectory(...)` 调用**必须**走 `callListDirectory()`：它把「方法不存在」这类同步 TypeError 转成 rejected promise，避免在 render 阶段（children 是急切构造的）炸掉整个 slot entry。加新调用点时照抄。
 - 移动端适配是**纯 DOM/CSS 注入**（`mobileAdapt`），只依赖官方 class 名的哈希后缀（`[class$="_frame"]` 这类选择器）。官方换 hash 前缀不影响它，但**改语义名会**；改动前先确认官方对应包的 class 名。
-- `installLanFetchReroute()` 包了全局 `window.fetch`，`wrapApi()` 包了 `connection.api.postJson`；两者都有 `__dshLanWrapped` / `lanFetchWrapped` 幂等标记。新增网络调用不要绕过 `isLoopback()` 判断（本机必须走原生路径）。
+- `installLanFetchReroute()` 包了全局 `window.fetch`，`wrapApi()` 包了 `connection.api.postJson`；两者都有 `__dshLanWrapped` / `lanFetchWrapped` 幂等标记。新增网络调用不要绕过 `clientIsLocal()` 判断（主机自己必须走原生路径，见 §3.6）。
 - 局域网浏览器上**官方设置栈不可用是有意为之**：`dsh-client-ui-settings` 的 `persistence` 在 `apply()` 里按 `ctx.remote.$host.isLoopback` 取一次性常量，多个对象在**构造期**就据此决定是否 `subscribe`/`derive`，而 `dsh-client-locale` / `dsh-client-ui-chat` 的 README 明说这是 deliberate。**不要**试图"翻开关"（1.3.x 的 `lanHostMode()` 就是这么干的，已删）；卡片文案已改为"设置项请在主机上修改"。
 
 ### 3.5 开关 / 绑定 / 补丁的硬约束（最容易写错的一节）
@@ -136,6 +136,10 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 3.6 认证 / 绑定相关（node 半边）
 
+- **"谁是本机"由 TCP 对端决定，绝不由 Host 头决定**（1.4.1 的教训，改这块前先读）：`isLocalRequest(req)` = 对端地址 ∈ {`127.0.0.1`, `::1`} ∪ `localHostAddresses()`（`os.networkInterfaces()` 里本机全部地址，含 IPv6 与 `%zone`，10 秒 TTL 缓存）。**不能用 Host 白名单**：桌面端可能用 `[::1]`（浏览器把 IPv6 字面量报成**带方括号**的形式）、机器名、本机局域网地址，或经 webview/协议改写过的 host 访问自己的 GUI —— 任何白名单都会把主机自己挡在门外。1.4.0 就是这么锁死桌面端的：服务端按 Host 把头判成"非本机"→ 302 到落地页；客户端又按 `location.hostname` 猜（`[::1]` 不在它的名单里）→ 挂上全屏口令层，且因为没设口令把输入框禁用了，主机彻底进不去。**残留取舍**：本机浏览器经 DNS rebinding 域名访问时也算"本机"（与 DSH 官方 `isTrustedApiRequest` 对 loopback 的信任一致）；局域网设备不受影响（对端地址由 TCP 保证，伪造 `Host: 127.0.0.1` 无效）。
+- `buildStatus().local` 是**客户端唯一该用的"我是不是主机"**；`loopback` 退化为"页面是不是用回环域名打开的"，只作展示。主机专属细节（`patchFile` / `profile` / `lanUrls` / 防火墙状态 / `platform` / `enforcement`）只发给 `local === true`。
+- 客户端侧**不许再用 hostname 猜**：`lib/client.js` 的 `detectLocalClient()` 去问服务端（`/dsh-lan/status` 的 `local`），hostname 只作首帧兜底；服务端说"是本机"时还会 `removeGate()` 自愈。历史包袱：客户端那个 `isLoopback()` 已删除（IPv6 回环带方括号是它的头号坑），别再加回来。
+- 口令门拒绝时会打一行去重日志 `password gate: … — peer=… is not an address of this machine (host=…)`：万一主机又被挡住，这行日志直接指出被判成"非本机"的 peer/host（1.4.0 时这种事故在日志里是完全静默的）。
 - **唯一闸门**是 `connection.requestRejection(request)`（`@deepseek-ai/dsh-client-connection/lib/index.js`：Host/Origin 围栏 + 浏览器会话），`admit()` 调它，RPC 路由与 fetch/WS 处理器都走 `admit` ⇒ 直接替换实例方法即可覆盖全部入口。
 - `browserAuth.authorizeIndex(req,res)` 只认 `GET /` 上的 token；兑换成功写 authority 绑定的 `HttpOnly; SameSite=Strict` cookie 并 303 到 `./`。`connection.authenticatedUrl(base)` 给 URL 挂进程 token（token 是**进程内存**随机值，磁盘上不存在）。
 - 官方围栏 `isTrustedApiRequest` 只在 loopback 或命中 `trustedHosts` 时放行，而 `trustedHosts` 是**启动时采样一次**的 LAN 字面量（换 IP/后开开关都可能过期）；本插件用口令门在 `requestRejection` 层放行，因此不依赖它（这也是 `/lanapi` 至今保留的原因之一）。
@@ -149,6 +153,10 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 不要只靠读代码。三类手段，按成本从低到高：
 
 ### 4.1 离线自测（首选，不需要装插件）
+
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，104 项断言）。它锁定的正是 1.4.1 那条硬规则——**主机自己永不被口令门拦，局域网设备必被拦**：主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403，客户端侧则从真实源码里切出 `isLoopbackHostname`/`detectLocalClient` 动态跑（含 `[::1]` 带方括号这种坑）。**改 `lib/index.js` 的门禁判定或 `lib/client.js` 的 gate 之前，先跑它**。
+
+其余场景（迁移/开关/路由）按下法自测：
 
 node 半边可以直接在 Node 里跑：`DSH_HOME` 指向**临时目录**，把 `node:child_process` 用 `module.registerHooks` 打桩（**保证不会真的动防火墙**），再用假的 `ctx.webServer` / `ctx.get("connection")` 驱动 `/dsh-lan/*` 路由。1.4.0 的验证脚本覆盖：
 
@@ -244,7 +252,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 |---|---|
 | 移动端/桌面浏览器正常，**dsh-app（Tauri + iframe）闪烁** | **环境问题（dsh-app 侧）**：同一份插件、同一个服务端，差异只在承载上下文——iframe 里 GUI 是跨站第三方，登录 Cookie 落不下去。 |
 | 顶层浏览器直接开 `http://<IP>:<端口>` | 正常：顶层文档 = 第一方，`SameSite=Strict` 无障碍。 |
-| 地址填 `127.0.0.1` / `localhost` | **根本不走口令链路**：客户端 `isLoopback()` 为真，服务端 `isLocalRequest()` 也全放行（无口令、无 token）。此时任何异常都与口令页无关，别往这条线查。 |
+| 地址填 `127.0.0.1` / `localhost` / `[::1]` / 机器名 / 本机局域网地址 | **根本不走口令链路**：主机自己的请求一律放行（判定看 TCP 对端，见 §3.6），客户端也不再按 hostname 猜。此时任何异常都与口令页无关，别往这条线查。（1.4.0 之前只有 `location.hostname` 恰好等于 `127.0.0.1`/`localhost`/`::1` 才享受这个豁免——`[::1]` 这种带方括号的写法会被漏掉，那正是桌面端被锁死的原因。） |
 
 - **dsh-app 侧解法（已在其仓库实施）**：不要用 iframe 承载 GUI，改为**每个地址一个独立顶层窗口**（Tauri `WebviewWindow`），顶层文档 = 第一方，口令只需输入一次。
 
@@ -257,6 +265,21 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.1 — 桌面端被自己的口令门挡住（"本机永远不需要口令"）
+
+- **现象**（用户实机，装的是 npm 上的 1.4.0）：桌面端装好插件并启用后**直接弹出口令页**，且因为还没设口令，输入框被禁用 ⇒ 桌面端完全不可用，只能卸载插件。
+- **两个半边同时判错，而它们的判定依据都不是"对端"**：
+  - **服务端**：`isLocalRequest = isLoopback(Host 头) && isLoopbackSocket(对端)` —— 要求 Host 头是 `127.0.0.1`/`localhost`/`::1` **之一**。桌面端用 `[::1]`（浏览器把 IPv6 字面量报成**带方括号**的形式）、机器名或本机局域网地址访问自己的 GUI 时，Host 白名单不命中 ⇒ 被当成局域网设备 ⇒ `GET /` 302 到落地页。
+  - **客户端**：`isLoopback()` 只看 `window.location.hostname`，而且名单里同样没有 `[::1]`（带方括号）⇒ 挂了全屏口令层 `#dshLanGate`，又因为 `/dsh-lan/status` 报 `passwordSet !== true` 把输入框与按钮 `disabled` —— 这正好解释了用户看到的"弹出且不可输入"（落地页 `landing.html` 从不永久禁用输入框，所以**看到的一定是客户端那层 gate**）。
+- **修复**：
+  - 服务端 `isLocalRequest(req)` 改为**只看 TCP 对端**：回环地址，或 `localHostAddresses()`（`os.networkInterfaces()` 里本机所有地址，含 IPv6 与 `%zone`，10 秒 TTL 缓存）。Host 头不再参与放行判定（`isLoopback()` 退化为 `/dsh-lan/status.loopback` 的展示字段）。
+  - 客户端删掉 `isLoopback()`，改为 `detectLocalClient()` 问服务端（`/dsh-lan/status` 的 `local`，缓存答案；hostname 只作首帧兜底，且服务端说"本机"时会 `removeGate()` 自愈）；gate/posture/卡片/锁定按钮/`/lanapi` 改写全部改用它。
+  - `/dsh-lan/status` 新增 `local`；主机专属细节（`patchFile`/`profile`/`lanUrls`/防火墙状态/`platform`/`enforcement`）改为只发给 `local === true`，局域网设备仍能看到 `passwordSet`/`warning`。
+  - 落地页新增：服务端说 `local === true` 时直接 `land()` 进 GUI（本机不该看口令页）；`passwordSet !== true` 时明说"主机尚未设置访问口令，暂时无法从局域网进入"并禁用表单，而不是给一个永远填不对的框。
+  - 口令门拒绝时打一行去重日志（`password gate: … peer=… host=…`），下次这类事故不再静默。
+- **取舍（写在明处）**：本机浏览器经 DNS rebinding 域名访问时也会被判为"本机"（与 DSH 官方 `isTrustedApiRequest` 对 loopback 的信任一致）。要更严就会回到"主机名白名单"，而那正是这次的病根——**主机可用性优先**。局域网设备不受影响：对端地址由 TCP 保证，伪造 `Host: 127.0.0.1` 依旧 403。
+- **验证**（离线，`lib/index.js` 直接跑 + 打桩 `node:child_process`）：**105 项全绿**。矩阵覆盖：本机 4 种对端（`127.0.0.1`/`::1`/`::ffff:127.0.0.1`/本机局域网地址）× 6 种 Host（`127.0.0.1`/`localhost`/`[::1]`/机器名/局域网地址/`evil.example.com`）**一律放行**，无 Host 头也放行；局域网对端（`203.0.113.7`）伪造 `Host: 127.0.0.1` 仍 403、裸 `/` 仍 302 到落地页；未设口令时乱造 key/cookie 也进不来；设口令后正确 key/cookie 才放行、错口令 `ok:false`；`configure` 只有本机可写（写出的补丁含受管块）；`/lanapi` 对无 key 的局域网设备 403；客户端侧用真实源码动态跑（`[::1]`/`0.0.0.0`/`::ffff:127.0.0.1` 算回环、局域网地址与机器名不算；服务端说本机则 gate 自愈，探测失败不缓存且回环页面照样不放 gate）。
 
 ### 1.4.0 — 按《重构需求与重构方案》重构：改名、去安装脚本、开关进设置、五键覆盖、升级迁移
 
