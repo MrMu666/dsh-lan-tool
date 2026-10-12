@@ -208,7 +208,15 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 - **硬约束（GitHub）**：GitHub 只把 tag 事件派发给「**已存在于默认分支**」的工作流文件。因此该文件落到 `main` 之前推的 tag 永远不会触发——这正是 `v1.0.0` / `v1.2.0` / `v1.3.1` 只有 tag、没有 release 的原因。补历史的 tag：Actions → release → Run workflow，填 tag 名。**这种补历史的手工运行不会发 npm**（`publish-npm` 上是 `if: github.event_name == 'push'`）：那批老版本不该被推到 registry 上，而 `workflow_dispatch` 恰好就是给它们用的。
 - **别改成 `on: release: [published]`**：Release 是 `GITHUB_TOKEN` 建的，而 GitHub 明确不派发由 `GITHUB_TOKEN` 产生的事件 ⇒ 那条路永远不触发（除非改用 PAT，而本机没有 PAT）。npm 发布必须挂在 tag push 上。
-- **硬约束（npm，第一次必须先手工发一次）**：trusted publishing 只能配在**已存在的包页面**上，且兑换接口是按包名的（`POST /-/npm/v1/oidc/token/exchange/package/<name>`，见 npm 11 的 `lib/utils/oidc.js`）⇒ 首个版本必须本机 `npm login && npm publish`（`0.0.1` 占位，或直接发 `1.4.0`）把包建出来，然后在 npm 包页 Settings → Trusted Publisher 填：`Owner: MrMu666` / `Repository: dsh-lan-tool` / `Workflow filename: release.yml`（**只写文件名，不写路径**）/ `Environment: 留空` / `Allowed action: npm publish`。三处都区分大小写；配好之前 `publish-npm` 会失败——**这是预期报错，不是 YAML 坏了**。
+- **硬约束（npm：首发必须先手工发一次）——2026-10-12 已走完**：trust 只能配在**已存在的包页面**上。`npm trust github` 会**先要 2FA、然后**才报 `404 Package not found`（实测包不存在时 `POST /-/package/<name>/trust` 就是 404），所以"给还没发布的包预配 trust"并不存在。正确顺序：本机发一个占位版把包建出来 → 配 trust → 之后全交给 CI。本仓库已完成：占位 `0.0.1`（`--tag bootstrap`，不占 `latest`）→ trust `73246fc8-0cca-46ac-9bab-b83cf202e458`（`repository=MrMu666/dsh-lan-tool`、`workflow_ref.file=release.yml`、`environment=null`、`permissions=[createPackage, createStagedPackage]`，registry 会自动补上 staged 权限）→ 推 `v1.4.0` 由 CI 首发正式版。当前 `dist-tags = {bootstrap: 0.0.1, latest: 1.4.0}`；占位版想清掉就 `npm unpublish dsh-lan-tool@0.0.1`（要 2FA；不清也无害，它不在 `latest` 上）。
+- **首发新包名时会先看到 `0.0.0-stage`**：registry 在包刚建立时先落一个 `0.0.0-stage` 占位版本并把 `latest` 指它，真实版本约 1–2 分钟后才出现在 `versions` 里并接管 `latest`（本次 06:35:12 建页、06:36:5x 见到 0.0.1）。**别据此判断发布失败**，轮询 `npm view dsh-lan-tool` 的 `dist-tags` 才是判据。
+- **npm 侧 2FA 只能人工点，但可以从未必是 TTY 的 shell 驱动**：`npm/lib/utils/auth.js` 第 10 行——web-2FA 只在 stdin **和** stdout 都是 TTY 时才启动，所以非 TTY 下直接跑 `npm publish` / `npm trust` 只会拿到 EOTP。实测可行的四步（脚本是临时的，已随 `.tmp-npm` 删除）：
+  1. 用脚本对任一 2FA 接口发请求，**必须带 `npm-auth-type: web`**（`npm-registry-fetch` 第 219 行按 `opts.authType` 写这个头；不带它 EOTP 的 body 只有一句 `Unauthorized`，**没有** `authUrl`/`doneUrl`）。
+  2. 从 EOTP body 取 `authUrl`/`doneUrl`，调 npm 自己的 `npm-profile` 的 `webAuthOpener(opener, authUrl, doneUrl, opts)`（`opener` 用 `cmd /c start` 打开浏览器即可）拿到一次性 token。
+  3. 该 token **可以跨操作使用**：把它当 `--otp` 交给 CLI（`npm publish … --otp=<token>`）实测能过 publish——npm 内部 `otplease()` 就是这么重试的，`npm-registry-fetch` 第 243 行按 `npm-otp` 头发出。
+  4. 链接要转给用户去点；**会话只活约 5 分钟**，没人点就作废（`doneUrl` 轮询转 404）。所以先说一声、用户就绪后再发起。
+- `npm trust list` 本身也要 2FA（同样是 EOTP），**不能**当无凭据的只读复核用；trust 是否生效以上线结果为准（本次以 CI 首发成功为准）。
+- **死路一条（省得再试）**：想借 Git for Windows 的 mintty 给 npm 一个 TTY 走官方流程不行——mintty 的 `-l/--log` 记录会让子进程 stdout 变成管道（实测 `stdout=no`），TTY 条件照样不成立；直接 `Start-Process mintty` 时 PATH 里也没有 `/usr/bin`，`bash`/`npm` 的 shebang 会找不到 bash。
 - `publish-npm` 的三道守卫（都做成「失败或跳过」，绝不静默发错东西）：包名必须是 `dsh-lan-tool`；`v<package.json version>` 必须等于 tag（不一致直接红灯）；registry 上已有同版本则**跳过**（所以重跑、补跑、给已发布版本重推 tag 都是幂等的）。预发布 tag（含 `-`，如 `v1.5.0-rc.1`）走 `--tag next`，**不动 `latest`**——DSH 装插件解析的是 `latest`，别让它落到 rc 上。
 - **排障要看 verbose**：npm 的 OIDC 失败是**被吞掉的**（`oidc()` 里 `catch` 只写 verbose 日志，然后照常发 → 表现出来的往往是 401/404 而不是"OIDC 失败"）。所以要 `npm publish --loglevel=verbose`，真正的行是 `Failed token exchange request with body message: …`。最常见就是 trusted publisher 没配或 workflow 文件名/owner/repo 对不上。token 兑换靠 `id-token: write` 提供的 `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN`；缺权限时 npm 直接跳过 OIDC（`Skipped because incorrect permissions for id-token`）。
 - **provenance 只对公开仓库自动开**：`oidc()` 里要求 OIDC token 的 `repository_visibility === 'public'` 且包是 public 才会 `opts.provenance = true`；仓库私有时照常发布、只是没有溯源徽章。另外 OIDC 只在 CI 里生效（`ciInfo.GITHUB_ACTIONS` 等），**本机 `npm publish` 永远走普通登录+OTP 路径**，两者不冲突。
@@ -268,7 +276,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - **`/lanapi` 暂留**：0.2.0 已无按方法的 loopback 专属层，它与客户端 `/api`→`/lanapi` 改写属可选简化项，删除需要一次端到端验证，本轮未做（用户要求不在本机安装），已在上文登记。
 - **卸载安全（本轮新增，方案没提）**：受管块留在 profile 补丁里而包被删掉 = 端口照样绑 `0.0.0.0`、口令门消失、防火墙规则还在。故加了 `scheduleDisposalCleanup()`：dispose 后 8 秒内若本行没有重新 apply（即不是热重载），就删掉受管块并撤防火墙规则；失败方向只会是"回到关"（详见 §3.5.1）。
 - **验证**（离线，未在本机安装）：node 半边自测 72 项（迁移/开关五键/门禁/`[]` 占位/路由/释放/停用清理与热重载取消清理）+ 静态一致性 43 项（名字四处一致、inject 双向、补丁无 `webserver` 行、脚本已删）全绿；`node --check lib/client.js` 通过。
-- **发布自动化（本轮新增）**：`release.yml` 多了 `publish-npm`——push `v*` tag 就自动发一次 npm，走 OIDC trusted publishing、**仓库里没有任何 npm secret**；三道守卫（包名必须是 `dsh-lan-tool` / `v<version>` 必须等于 tag / registry 上已有同版本则跳过）保证不会静默发错或重复发。首次发布必须先本机手工 bootstrap 一次、以及"npm 会把 OIDC 失败吞进 verbose 日志"这条排障要点，都在 §5.1。
+- **发布自动化（本轮新增）**：`release.yml` 多了 `publish-npm`——push `v*` tag 就自动发一次 npm，走 OIDC trusted publishing、**仓库里没有任何 npm secret**；三道守卫（包名必须是 `dsh-lan-tool` / `v<version>` 必须等于 tag / registry 上已有同版本则跳过）保证不会静默发错或重复发。**已在 `v1.4.0` 实测跑通**（run #9：`release` 与 `publish-npm` 两个 job 全绿，npm 侧 `latest=1.4.0`、tarball 恰为 `files` 里那 7 个文件、自动带 provenance 签名）。首次发布必须先本机手工 bootstrap 一次、非 TTY 下怎么过 2FA、以及"npm 会把 OIDC 失败吞进 verbose 日志"这些排障要点，都在 §5.1。
 
 ### 1.3.8 — 移动端「标准模式」等头部动作改为靠左紧跟「轨迹」，间距=官方 tabs gap
 
