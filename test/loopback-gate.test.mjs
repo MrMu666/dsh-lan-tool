@@ -21,18 +21,25 @@ const HOME = mkdtempSync(join(tmpdir(), 'dsh-lan-test-'));
 process.env.DSH_HOME = HOME;
 const PATCH = join(HOME, 'profiles', 'desktop', 'cordis.patch.yml');
 
-// The firewall must never be touched for real: stub node:child_process.
+// The firewall must never be touched for real: stub node:child_process. The
+// stub is scriptable, so the firewall verdicts below can be driven through the
+// real /dsh-lan/status route (netsh "rule exists" + a PowerShell rule dump).
 const CHILD_PROCESS_STUB = `
 export const spawnCalls = [];
+export const stubState = { netshRuleExists: true, powershellJson: '' };
 export function execFile(cmd, args, opts, cb) {
   spawnCalls.push({ cmd, args });
   const callback = typeof opts === 'function' ? opts : cb;
-  if (typeof callback === 'function') process.nextTick(() => callback(null, '', ''));
+  const out = cmd === 'powershell.exe' ? stubState.powershellJson : '';
+  if (typeof callback === 'function') process.nextTick(() => callback(null, out, ''));
   return { on() {}, once() {}, kill() {} };
 }
 export function spawnSync(cmd, args) {
   spawnCalls.push({ cmd, args, sync: true });
-  return { status: 0, stdout: '', stderr: '', pid: 1 };
+  const text = (args || []).join(' ');
+  const showRule = cmd === 'netsh' && text.includes('show') && text.includes('rule');
+  const status = showRule && !stubState.netshRuleExists ? 1 : 0;
+  return { status, stdout: '', stderr: '', pid: 1 };
 }
 export default { execFile, spawnSync };
 `;
@@ -46,6 +53,7 @@ registerHooks({
   },
 });
 
+const childProcessStub = await import('node:child_process');
 const plugin = await import('../lib/index.js');
 
 // ── harness ────────────────────────────────────────────────────────────────
@@ -58,7 +66,7 @@ const check = (label, condition, detail = '') => {
 const OFFICIAL_REJECTION = { official: 'rejection' };
 const OFFICIAL_AUTHORIZE = 'official-authorize';
 
-function makeHarness({ bindHost = '0.0.0.0' } = {}) {
+function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
   const routes = new Map();
   const calls = { rejection: 0, authorize: 0 };
   const connection = {
@@ -75,8 +83,8 @@ function makeHarness({ bindHost = '0.0.0.0' } = {}) {
   };
   const webServer = {
     host: bindHost,
-    port: 19387,
-    config: { host: bindHost, port: 19387, compression: 'gzip', compressionLevel: 6, compressionThresholdBytes: 1024 },
+    port,
+    config: { host: bindHost, port, compression: 'gzip', compressionLevel: 6, compressionThresholdBytes: 1024 },
     register(route) {
       routes.set(`${route.kind} ${route.path}`, route);
       return () => routes.delete(`${route.kind} ${route.path}`);
@@ -153,6 +161,59 @@ const localV4 = (() => {
 const REMOTE = '203.0.113.7'; // TEST-NET-3: never a local address
 const LOCAL_PEERS = ['127.0.0.1', '::1', '::ffff:127.0.0.1', localV4];
 const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6uev9g:19387', `${localV4}:19387`, 'evil.example.com'];
+
+// ── A0. firewall verdicts: never claim "blocked" when the OS admits the port ─
+// Runs BEFORE any remote request, so the "a LAN device got through" evidence
+// (section K) cannot mask these paths.
+{
+  const statusFor = async (port) => {
+    const h = makeHarness({ bindHost: '0.0.0.0', port });
+    const res = makeRes();
+    await h.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:1' }), res);
+    return json(res);
+  };
+  const stub = childProcessStub.stubState;
+
+  stub.netshRuleExists = true;
+  stub.powershellJson = '';
+  let body = await statusFor(19401);
+  check('A0 our own rule → open (plugin)', body.firewallOk === true && body.firewallSource === 'plugin' && body.firewallManaged === true, `${body.firewallOk}/${body.firewallSource}`);
+
+  // The Windows "allow this app" dialog creates a PROGRAM-scoped rule with
+  // LocalPort=Any — invisible to the named-rule check, which is the whole bug.
+  stub.netshRuleExists = false;
+  stub.powershellJson = JSON.stringify({ name: 'DeepSeek Harness', port: 'Any', protocol: 'Any', program: process.execPath });
+  body = await statusFor(19402);
+  check('A0 OS rule for THIS program → open (system)', body.firewallOk === true && body.firewallSource === 'system' && body.firewallManaged === false, `${body.firewallOk}/${body.firewallSource}/${body.firewallNote}`);
+
+  // …but an Any-port rule belonging to some other program proves nothing.
+  stub.powershellJson = JSON.stringify({ name: 'Wi-Fi Direct', port: 'Any', protocol: 'Any', program: 'C:\\Windows\\System32\\svchost.exe' });
+  body = await statusFor(19403);
+  check('A0 another program\'s Any-port rule → still blocked', body.firewallOk === false && body.firewallSource === 'plugin', `${body.firewallOk}/${body.firewallSource}`);
+
+  stub.powershellJson = '';
+  body = await statusFor(19404);
+  check('A0 nothing found → blocked (needs admin)', body.firewallOk === false && body.firewallManaged === true, `${body.firewallOk}/${body.firewallManaged}`);
+
+  stub.powershellJson = JSON.stringify([{ name: 'port rule', port: '19405, 443', protocol: 'TCP', program: 'Any' }]);
+  body = await statusFor(19405);
+  check('A0 port list that covers the port → open (system)', body.firewallOk === true && body.firewallSource === 'system', `${body.firewallOk}/${body.firewallSource}`);
+
+  stub.powershellJson = JSON.stringify([{ name: 'port rule', port: '19406, 443', protocol: 'TCP', program: 'Any' }]);
+  body = await statusFor(19407);
+  check('A0 port list that does not cover the port → blocked', body.firewallOk === false, `${body.firewallOk}`);
+
+  stub.powershellJson = JSON.stringify([{ name: 'udp rule', port: '19408', protocol: 'UDP', program: 'Any' }]);
+  body = await statusFor(19408);
+  check('A0 UDP-only rule does not open a TCP port', body.firewallOk === false, `${body.firewallOk}`);
+
+  stub.powershellJson = JSON.stringify([{ name: 'range rule', port: '19400-19500', protocol: 'TCP', program: 'Any' }]);
+  body = await statusFor(19409);
+  check('A0 port range covering the port → open (system)', body.firewallOk === true && body.firewallSource === 'system', `${body.firewallOk}/${body.firewallSource}`);
+
+  stub.netshRuleExists = true;
+  stub.powershellJson = '';
+}
 
 // ── A. switch ON: the host machine is never gated ──────────────────────────
 {
@@ -365,6 +426,129 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   await status.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }), remoteRes);
   const remoteBody = json(remoteRes);
   check('J LAN device gets the version but not the host diagnosis', remoteBody.version === pkg.version && remoteBody.seenHosts === undefined);
+}
+
+// ── K. firewall: a LAN device that got through proves the port is open ─────
+{
+  const stub = childProcessStub.stubState;
+  stub.netshRuleExists = false;
+  stub.powershellJson = '';
+  const h = makeHarness({ bindHost: '0.0.0.0', port: 19420 });
+  // A LAN peer reaches the server while LAN access is on …
+  h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19420', headers: { 'x-dsh-lan-key': 'whatever' } }));
+  const res = makeRes();
+  await h.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:1' }), res);
+  const body = json(res);
+  check('K admitted LAN traffic → open (observed)', body.firewallOk === true && body.firewallSource === 'observed', `${body.firewallOk}/${body.firewallSource}`);
+  stub.netshRuleExists = true;
+}
+
+// ── L. mobile Enter: runs the real interception code on a stubbed DOM ──────
+{
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  const start = src.indexOf('function composerStructure(el) {');
+  const stop = src.indexOf('document.addEventListener("keydown", onKeydownCapture, true);');
+  const slice = src.slice(start, stop);
+
+  const makeScope = ({ inComposer = true } = {}) => {
+    const dispatched = [];
+    const timers = [];
+    class FakeEvent {
+      constructor(type, init = {}) {
+        Object.assign(this, init);
+        this.type = type;
+        this.defaultPrevented = false;
+        this.propagationStopped = false;
+      }
+      preventDefault() { this.defaultPrevented = true; }
+      stopPropagation() { this.propagationStopped = true; }
+    }
+    class FakeKeyboardEvent extends FakeEvent {}
+    class FakeInputEvent extends FakeEvent {}
+    class FakeElement {
+      constructor() { this.children = []; this.isContentEditable = true; }
+      querySelectorAll() { return []; }
+      querySelector() { return this.editorRoot ?? null; }
+      dispatchEvent(event) { dispatched.push(event); return true; }
+      closest() { return inComposer ? this.wrap : null; }
+    }
+    const target = new FakeElement();
+    const editorRoot = new FakeElement();
+    const wrap = new FakeElement();
+    wrap.editorRoot = editorRoot;
+    target.wrap = wrap;
+    const api = new Function(
+      'active',
+      'document',
+      'window',
+      'KeyboardEvent',
+      'InputEvent',
+      'HTMLElement',
+      `${slice}\nreturn { onKeydownCapture, insertLineBreakComposer, composerStructure };`,
+    )(
+      true,
+      { execCommand: () => true },
+      { setTimeout: (fn) => { timers.push(fn); } },
+      FakeKeyboardEvent,
+      FakeInputEvent,
+      FakeElement,
+    );
+    return { api, target, wrap, dispatched, timers, FakeKeyboardEvent };
+  };
+
+  const enter = (scope, init = {}) => {
+    const event = new scope.FakeKeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true, ...init });
+    event.target = scope.target;
+    scope.api.onKeydownCapture(event);
+    return event;
+  };
+
+  const plain = makeScope();
+  const plainEvent = enter(plain);
+  check('L plain Enter is swallowed', plainEvent.defaultPrevented === true && plainEvent.propagationStopped === true);
+  check('L plain Enter is re-issued as Shift+Enter', plain.dispatched.length === 1 && plain.dispatched[0].key === 'Enter' && plain.dispatched[0].shiftKey === true, JSON.stringify(plain.dispatched.map((e) => e.type + ':' + e.key + ':' + e.shiftKey)));
+  check('L the re-issued event is marked so it cannot loop', plain.dispatched[0].__dshLanLineBreak === true);
+
+  const composing = makeScope();
+  const composingEvent = enter(composing, { isComposing: true });
+  check('L Enter during IME composition is left alone', composingEvent.defaultPrevented === false && composing.dispatched.length === 0);
+  const imeKeyCode = makeScope();
+  const imeEvent = enter(imeKeyCode, { keyCode: 229 });
+  check('L keyCode 229 (IME) is left alone', imeEvent.defaultPrevented === false && imeKeyCode.dispatched.length === 0);
+
+  const shifted = makeScope();
+  const shiftedEvent = enter(shifted, { shiftKey: true });
+  check('L Shift+Enter keeps the app\'s own behaviour', shiftedEvent.defaultPrevented === false && shifted.dispatched.length === 0);
+  const outside = makeScope({ inComposer: false });
+  const outsideEvent = enter(outside);
+  check('L Enter outside the composer is untouched', outsideEvent.defaultPrevented === false && outside.dispatched.length === 0);
+
+  const marked = makeScope();
+  const markedEvent = enter(marked, { __dshLanLineBreak: true });
+  check('L our own synthetic event is ignored', markedEvent.defaultPrevented === false && marked.dispatched.length === 0);
+
+  // If the app ignored the synthetic key, the fallbacks must still fire.
+  const fallback = makeScope();
+  enter(fallback);
+  check('L a fallback is scheduled after the first attempt', fallback.timers.length === 1);
+  fallback.timers[0]();
+  check('L the beforeinput fallback carries insertLineBreak', fallback.dispatched.some((e) => e.inputType === 'insertLineBreak'), JSON.stringify(fallback.dispatched.map((e) => e.type + ':' + (e.inputType || e.key || ''))));
+  check('L a second fallback is scheduled in turn', fallback.timers.length === 2);
+  fallback.timers[1](); // legacy execCommand path — must not throw
+  check('L the legacy fallback is reached without throwing', true);
+}
+
+// ── M. locale strings: the escaped Chinese must decode to what was intended ─
+{
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  const value = (key) => {
+    const match = new RegExp('"' + key + '": "((?:\\\\.|[^"\\\\])*)"').exec(src);
+    if (match === null) return null;
+    try { return JSON.parse('"' + match[1] + '"'); } catch { return null; }
+  };
+  check('M zh firewall.system reads 防火墙已放行（系统规则）', value('firewall.system') === '防火墙已放行（系统规则）', String(value('firewall.system')));
+  check('M zh firewall.retry reads 系统规则会自动识别，无需重启', value('firewall.retry') === '系统规则会自动识别，无需重启', String(value('firewall.retry')));
+  check('M zh firewall.bad still reads 防火墙未放行（需管理员权限）', value('firewall.bad') === '防火墙未放行（需管理员权限）', String(value('firewall.bad')));
 }
 
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);

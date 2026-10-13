@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.2 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.4.3 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
@@ -114,6 +114,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 - 所有 `props.listDirectory(...)` 调用**必须**走 `callListDirectory()`：它把「方法不存在」这类同步 TypeError 转成 rejected promise，避免在 render 阶段（children 是急切构造的）炸掉整个 slot entry。加新调用点时照抄。
 - 移动端适配是**纯 DOM/CSS 注入**（`mobileAdapt`），只依赖官方 class 名的哈希后缀（`[class$="_frame"]` 这类选择器）。官方换 hash 前缀不影响它，但**改语义名会**；改动前先确认官方对应包的 class 名。
+- **输入框是 shell 自己的 Lexical 富文本编辑器，不是 textarea**（官方文档原话：Plain Enter 用配置的投递模式、Ctrl/Cmd+Enter 用互补模式、**Shift+Enter 插入换行**，Alt/双修饰键留给应用快捷键）。所以"让 Enter 换行"**不能**靠 `document.execCommand` 或改 value —— 1.4.2 及以前正是用 `execCommand("insertText","\n")`，Lexical 完全不理会，而事件又被 `preventDefault` 吞了，结果按键**毫无反应**。正确做法（1.4.3）：**吞掉普通 Enter，再对同一目标补发一个 `shiftKey: true` 的 keydown**，让 App 自己那条换行绑定生效；兜底依次是 `beforeinput{inputType:"insertLineBreak"}` 与 `execCommand("insertLineBreak")`，每次尝试后用「`<br>` 数 ×1000 + 子元素数」判断是否真插入了（防重复插入）。另外合成事件的 `defaultPrevented` 会被 App 的 gesture 层读取，所以吞原始事件时 `preventDefault()` 与 `stopPropagation()` 都要做；IME 组词中的 Enter（`isComposing` 或 `keyCode === 229`）必须放行，否则选不了词。
 - `installLanFetchReroute()` 包了全局 `window.fetch`，`wrapApi()` 包了 `connection.api.postJson`；两者都有 `__dshLanWrapped` / `lanFetchWrapped` 幂等标记。新增网络调用不要绕过 `clientIsLocal()` 判断（主机自己必须走原生路径，见 §3.6）。
 - 局域网浏览器上**官方设置栈不可用是有意为之**：`dsh-client-ui-settings` 的 `persistence` 在 `apply()` 里按 `ctx.remote.$host.isLoopback` 取一次性常量，多个对象在**构造期**就据此决定是否 `subscribe`/`derive`，而 `dsh-client-locale` / `dsh-client-ui-chat` 的 README 明说这是 deliberate。**不要**试图"翻开关"（1.3.x 的 `lanHostMode()` 就是这么干的，已删）；卡片文案已改为"设置项请在主机上修改"。
 
@@ -151,6 +152,13 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - `/lanapi`（前缀路由 + 客户端 `/api`→`/lanapi` 改写）在 0.2.0 已**不是必需**（没有按方法的 loopback 专属层），属**可选简化项**；删它需要一次端到端局域网验证（把走它的官方界面都过一遍），**没做那次验证前保留**。
 - HMR 让"改开关即时生效"成立，但有前提：`dsh-hmr` 要求进程带 `--expose-internals`、`profileContext` 已 provide、且 `appReady` 就绪（桌面启动器实测满足；其它启动路径未验证）。卡片保留"正在生效"提示，未生效时提示重启。
 
+### 3.7 防火墙状态判定（1.4.3）
+
+- **本插件建的规则只是三个来源之一**，`/dsh-lan/status` 报的应是"OS 到底放行没有"：`firewallSource = plugin`（我们建的 `dsh-lan-tool (auto)`）、`system`（**Windows 自己的「是否允许访问」弹窗建的规则**——程序级、`LocalPort=Any`，按名字查我们的规则是查不到它的）、`observed`（**已经有非本机设备成功连进来过**，最便宜也最硬的证据：`noteRequestHost` 里 `local !== true` 时记 `remotePeerSeenAt`）、`none`（没有受支持的防火墙工具）。
+- **必须同时匹配程序**：Windows 上 `LocalPort=Any` 的入站允许规则里混着大量**别的程序**的规则（作者机实测 130 条允许规则，随手一个 `Any` 命中是 Wi-Fi Direct）。只按端口判会把"别的程序被放行"误读成"本端口已放行"。
+- **一次完整枚举约 4 秒**（`Get-NetFirewallRule` + 逐条 `Get-NetFirewallPortFilter`；`Get-NetFirewallPortFilter` 全量枚举还需要管理员权限，实测"拒绝访问"）。所以：OS 查询**只在后台跑**，`/dsh-lan/status` 走 stale-while-revalidate（先返回上次结论，过期就丢一个后台刷新，永不阻塞请求）；判定不是"我们自己的规则且 ok"时按 **10s→20s→40s→60s 封顶**退避重查——用户点完系统弹窗的「允许」后，卡片几秒到几十秒内自己变绿，无需重启、无需管理员权限；稳定的 `plugin` 判定缓存 10 分钟。`configure` 开关切换时会清空缓存并重置退避。
+- 判定失败/超时一律**不报"已放行"**（保持"未放行"），失败方向与门禁一致：宁可显示保守。
+
 ---
 
 ## 4. 修改后的验证方法（必做）
@@ -159,7 +167,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，116 项断言）。它锁定的正是那条硬规则——**主机自己永不被口令门拦，局域网设备必被拦**：主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码里切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、**旧服务端（无 `local` 字段）不许挂 gate**、缺少所有字段、探测失败、版本不一致等情形。**改 `lib/index.js` 的门禁判定或 `lib/client.js` 的 gate 之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**140 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定）；**③移动端 Enter**（用打桩 DOM 跑真实的 `onKeydownCapture`：普通 Enter 被吞并补发 Shift+Enter、IME 组词与 keyCode 229 放行、Shift+Enter 不动、合成事件不自我循环、两级兜底按序触发）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）与中文文案转义解码断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/mobileAdapt 之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -270,6 +278,19 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.3 — 移动端 Enter 真的换行；防火墙状态不再"明明放行了还说没放行"
+
+两个用户报的问题，根因都不在"判定逻辑写反"，而在**换了个对象**：
+
+- **①移动端 Enter 毫无反应**：DSH 的输入框是 **Lexical 富文本编辑器**（不是 textarea），官方按键表是"Plain Enter 发送 / Shift+Enter 换行"。插件从 v51 起用 `document.execCommand("insertText","\n")` 插换行 —— Lexical 完全不理会这种命令，而事件同时被 `preventDefault()` 吞掉，于是按键**什么也不做**（比"误发送"更难查，因为控制台一声不响）。
+  - 修复：吞掉普通 Enter 后，**对同一目标补发一个 `shiftKey: true` 的 keydown**，让 App 自己那条换行绑定干活；再用「`<br>` 数 ×1000 + 子元素数」在 60ms 后确认是否真的插入了，否则依次退回 `beforeinput{inputType:"insertLineBreak"}` 与 `execCommand("insertLineBreak")`。合成事件打 `__dshLanLineBreak` 标记防止自我循环；IME 组词（`isComposing` / `keyCode 229`）一律放行，否则选不了词。
+  - 断言（打桩 DOM 跑真实 `onKeydownCapture`）：普通 Enter 被吞且补发 Shift+Enter、组词与 229 放行、Shift+Enter 不动、外来区域不动、合成事件不循环、两级兜底按序触发。
+- **②防火墙"明明放行了仍显示未放行（需管理员权限）"**：非管理员运行时 netsh 建不了 `dsh-lan-tool (auto)`，Windows 会弹一次「是否允许访问」并由**系统自己**建一条**程序级**规则（`LocalPort=Any`）——按名字查我们那条规则永远查不到它，而旧代码只查自己的规则，于是卡片一直报"未放行"。旧实现还把结论**缓存 600 秒**，即便再查也要等 10 分钟。
+  - 修复：判定来源扩成四种（见 §3.7）——自己的规则 / **系统弹窗建的规则**（PowerShell 结构化查询 + **程序路径必须匹配**）/ **已有非本机设备成功连入过**（`remotePeerSeenAt`，最便宜也最硬）/ 无防火墙工具。OS 查询放后台、stale-while-revalidate，未放行时按 10s→60s 退避重查 ⇒ 用户点完系统弹窗的「允许」，卡片几秒到几十秒**自己变绿**，不需要管理员权限、不需要重启。`configure` 切开关会清缓存重查。
+  - 顺带：开关打开而 netsh 失败时**打一行日志**说明"系统会弹一次窗、卡片会自己认领"，不再静默。
+  - 断言（打桩 netsh + PowerShell 输出）：自己的规则 → `plugin`；同程序的系统规则 → `system`；**别的程序的 Any 端口规则不算**；端口列表/区间命中；UDP 不命中；已有局域网设备连入 → `observed`。
+- **验证**：`npm test` **140 项全绿**（116 → 140）。移动端那条只做到"按键语义正确"，**真机手感（iOS/Android 键盘的 return 键、中文输入法）仍需用户在手机上确认**——本地没有触屏设备，无头 Chrome 也进不到有会话的输入框。
 
 ### 1.4.2 — "装了没重启"的混合版本不再变成口令页 + 拿不准就不挂 gate
 

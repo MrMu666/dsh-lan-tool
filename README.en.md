@@ -51,7 +51,7 @@ DSH deliberately withholds the settings scope from non-loopback browsers (`persi
 ### Mobile interaction details
 
 - **Sidebar**: hidden while collapsed — the draggable **whale button** at the top-left is the entry point (its drag position is remembered). Tapping a session row, tapping anywhere else, or **swiping left** collapses it; in the conversation view **swiping right** expands the sidebar directly.
-- **Keyboard**: the page never auto-focuses the composer on load, tapping the whale does not pop the keyboard, and Enter inserts a newline only (sending goes through the send button).
+- **Keyboard**: the page never auto-focuses the composer on load, tapping the whale does not pop the keyboard, and **Enter inserts a newline instead of sending** (sending goes through the send button; Enter while an IME candidate list is open still commits the candidate).
 - **UI details**: lingering official Tooltip bubbles are hidden; the `ask_user_question` card is fully adapted to narrow screens (42px option touch targets); the permission/model two-line layout and the bottom stats bar stay aligned with the composer.
 - **No password-page flicker**: if the browser cannot keep the login credential (e.g. the page is embedded in a cross-site iframe/WebView, where a `SameSite=Strict` cookie is dropped), the password page stops auto-redirecting after 2 hops and explains the problem instead of looping forever.
 
@@ -91,7 +91,7 @@ Quit the desktop app before running the CLI (`dsh-desktop-host` says so in its m
 
 ### Firewall notes
 
-- **Windows**: a Windows Defender Firewall allow rule named `dsh-lan-tool (auto)` (Domain + Private) is maintained automatically; without an elevated shell the card reports "firewall blocked (needs admin)".
+- **Windows**: a Windows Defender Firewall allow rule named `dsh-lan-tool (auto)` (Domain + Private) is maintained automatically. **Without an elevated shell the first enable triggers the OS "allow access" prompt once** — click Allow and Windows creates its own rule; the card picks that system rule up **automatically** (within seconds it reports "firewall open" with the rule's name) — no admin rights and no restart needed. "firewall blocked (needs admin)" is only reported when neither our rule nor any OS rule admits the port.
 - **Linux**: an allow rule is maintained via firewalld → ufw → iptables (first available). When no supported firewall tool is found the card reports "firewall not managed", which normally means the port is already reachable.
 - On every platform, turning the "LAN access" toggle off removes the override and returns to `127.0.0.1` — that is the primary security switch.
 
