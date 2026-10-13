@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.3 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.4.4 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
@@ -115,6 +115,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - 所有 `props.listDirectory(...)` 调用**必须**走 `callListDirectory()`：它把「方法不存在」这类同步 TypeError 转成 rejected promise，避免在 render 阶段（children 是急切构造的）炸掉整个 slot entry。加新调用点时照抄。
 - 移动端适配是**纯 DOM/CSS 注入**（`mobileAdapt`），只依赖官方 class 名的哈希后缀（`[class$="_frame"]` 这类选择器）。官方换 hash 前缀不影响它，但**改语义名会**；改动前先确认官方对应包的 class 名。
 - **输入框是 shell 自己的 Lexical 富文本编辑器，不是 textarea**（官方文档原话：Plain Enter 用配置的投递模式、Ctrl/Cmd+Enter 用互补模式、**Shift+Enter 插入换行**，Alt/双修饰键留给应用快捷键）。所以"让 Enter 换行"**不能**靠 `document.execCommand` 或改 value —— 1.4.2 及以前正是用 `execCommand("insertText","\n")`，Lexical 完全不理会，而事件又被 `preventDefault` 吞了，结果按键**毫无反应**。正确做法（1.4.3）：**吞掉普通 Enter，再对同一目标补发一个 `shiftKey: true` 的 keydown**，让 App 自己那条换行绑定生效；兜底依次是 `beforeinput{inputType:"insertLineBreak"}` 与 `execCommand("insertLineBreak")`，每次尝试后用「`<br>` 数 ×1000 + 子元素数」判断是否真插入了（防重复插入）。另外合成事件的 `defaultPrevented` 会被 App 的 gesture 层读取，所以吞原始事件时 `preventDefault()` 与 `stopPropagation()` 都要做；IME 组词中的 Enter（`isComposing` 或 `keyCode === 229`）必须放行，否则选不了词。
+- **"不要误弹输入法"必须和 Enter 用同一个判定**（1.4.4 的教训）：`isComposerField()` = 文本录入元素（contenteditable / TEXTAREA / INPUT）＋ 不在 `[class*="dshLan"]`（我们自己的 gate/picker 输入框）里 ＋ （是 contenteditable 或落在 `_composerSeat`/`_input`/`_composer` 包装内）。**≤1.4.3 的键盘守卫写的是 `TEXTAREA || INPUT` + `[class$="_composerSeat"]`，而输入框是 Lexical 的 contenteditable ⇒ 这个守卫从来没匹配过**，于是官方在挂载、切会话、以及"关掉一个吃键盘的浮层后把键盘交还 `SessionInput.focus()`"（官方文档原话）时反复把输入法弹出来——用户报的"点小鲸鱼 / 点会话行就弹键盘"就是这个。现在的规则：`pointerdown`/`keydown`/`input` 落在输入框上才把「3 秒内算正在输入」的窗口（`composerWarmAt`）刷新；窗口内允许聚焦（发送后光标回位、键盘不被抢走），窗口外一律拒绝——既拦 `HTMLElement.prototype.focus`（在 factory 顶层安装，早于 React 挂载），也用 `focusin` 兜底（覆盖"在我们 patch 之前就抓走了 `focus()` 引用"的代码、以及任何绕过 prototype 的聚焦）。另外**口令门在手机上不再自动聚焦**（`if (!mobilePortrait) input.focus();`，桌面保留），否则 gate 每次重挂都会弹一次键盘。
 - `installLanFetchReroute()` 包了全局 `window.fetch`，`wrapApi()` 包了 `connection.api.postJson`；两者都有 `__dshLanWrapped` / `lanFetchWrapped` 幂等标记。新增网络调用不要绕过 `clientIsLocal()` 判断（主机自己必须走原生路径，见 §3.6）。
 - 局域网浏览器上**官方设置栈不可用是有意为之**：`dsh-client-ui-settings` 的 `persistence` 在 `apply()` 里按 `ctx.remote.$host.isLoopback` 取一次性常量，多个对象在**构造期**就据此决定是否 `subscribe`/`derive`，而 `dsh-client-locale` / `dsh-client-ui-chat` 的 README 明说这是 deliberate。**不要**试图"翻开关"（1.3.x 的 `lanHostMode()` 就是这么干的，已删）；卡片文案已改为"设置项请在主机上修改"。
 
@@ -130,6 +131,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - **"开" = 往活动 profile 的 `cordis.patch.yml` 写一段受管块**（`# --- dsh-lan-tool LAN block ---`，host `0.0.0.0`，五键齐全）；**"关" = 删掉这段块**。唯一写入者是 `setLanBlock()`，模板在 `lanBlock()`，三键取值直接抄当前 `ctx.webServer.config`，不硬编码。
 - **权威状态是真实绑定，不是补丁文件**：`buildStatus().enabled = ctx.webServer.host === "0.0.0.0"`，`desiredEnabled` 才来自补丁块；两者不一致时 `applying: true`（卡片显示"正在生效…"，因为 HMR 有写稳定窗口 + debounce，约 2 秒）。**口令门也按真实绑定判定**（`boundToAllInterfaces(ctx)`），所以"文件已写关、socket 还没重绑"的那一瞬间仍然 fail-safe。
 - `profile` 名字与补丁路径**必须**取 `profileContext`（`@deepseek-ai/dsh/lib/profile-boot-*.js` 在启动时 `provide("profileContext", { name, dir, patchPath, home, … })`）：写死 `"web"` 是 1.3.x 的头号静默 bug（开关读写 `profiles/web/cordis.patch.yml`，而桌面版读 `profiles/desktop/…`）。`cordis.patch.yml` 里 insert 行的 `config.profile` 只是兜底。
+- **切换开关那 2 秒属于"正在生效"，不是错误**（1.4.4）：改写补丁后 harness 会重新绑定 socket（`0.0.0.0` ⇄ `127.0.0.1`），期间所有请求被拒/重置，浏览器只会给一句 `Failed to fetch`。客户端的 `fetchStatus()` 因此在 `REBIND_GRACE_MS`（8 秒；`markRebindWindow()` 在 `configure` 成功后立刻打上，服务端报 `applying: true` 时也会续期）内把这类网络错误当预期：保留上一份 `data`、退回"正在生效…"、400ms 后重试；只有超出窗口的失败才显示红字（≤1.4.3 每次切换都会闪一下"加载失败：Failed to fetch"）。**判据是"网络类错误 **且** 处于窗口内"，不是"任何错误都吞"**（`isTransientFetchError()`：Failed to fetch / NetworkError / Load failed / aborted / timeout / HTTP 502-504）。
 
 ### 3.5.1 卸载/停用后的清理（别删掉这段逻辑）
 
@@ -158,6 +160,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - **必须同时匹配程序**：Windows 上 `LocalPort=Any` 的入站允许规则里混着大量**别的程序**的规则（作者机实测 130 条允许规则，随手一个 `Any` 命中是 Wi-Fi Direct）。只按端口判会把"别的程序被放行"误读成"本端口已放行"。
 - **一次完整枚举约 4 秒**（`Get-NetFirewallRule` + 逐条 `Get-NetFirewallPortFilter`；`Get-NetFirewallPortFilter` 全量枚举还需要管理员权限，实测"拒绝访问"）。所以：OS 查询**只在后台跑**，`/dsh-lan/status` 走 stale-while-revalidate（先返回上次结论，过期就丢一个后台刷新，永不阻塞请求）；判定不是"我们自己的规则且 ok"时按 **10s→20s→40s→60s 封顶**退避重查——用户点完系统弹窗的「允许」后，卡片几秒到几十秒内自己变绿，无需重启、无需管理员权限；稳定的 `plugin` 判定缓存 10 分钟。`configure` 开关切换时会清空缓存并重置退避。
 - 判定失败/超时一律**不报"已放行"**（保持"未放行"），失败方向与门禁一致：宁可显示保守。
+- **编码（1.4.4 实机乱码事故）**：Windows PowerShell 的 stdout 走**控制台代码页**（中文系统是 GBK），所以脚本第一行必须 `[Console]::OutputEncoding=[Text.Encoding]::UTF8`；否则中文规则名会被当 UTF-8 解码成乱码——用户报的 `(������ѧУ�˻�)` 就是这个。实测对照：不加那行得到 `Զ��Э������վ��`，加了得到 `远程协助（入站）`。规则名进卡片前还要过 `sanitizeFirewallNote()`（去 U+FFFD 与控制字符、超 60 字符截断、空则回退 `Windows rule`），这样即使将来又出现编码问题，显示的也是最坏情况下的中性文案而不是乱码。
 
 ---
 
@@ -167,7 +170,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**140 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定）；**③移动端 Enter**（用打桩 DOM 跑真实的 `onKeydownCapture`：普通 Enter 被吞并补发 Shift+Enter、IME 组词与 keyCode 229 放行、Shift+Enter 不动、合成事件不自我循环、两级兜底按序触发）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）与中文文案转义解码断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/mobileAdapt 之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**164 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端键盘**（用打桩 DOM 跑真实的捕获处理器：普通 Enter 被吞并补发 Shift+Enter、IME 组词与 keyCode 229 放行、Shift+Enter 与插件自己的输入框不动、合成事件不自我循环、两级兜底按序触发；以及"冷启动时的程序化聚焦被丢弃 / 点过输入框后放行 / 3 秒后重新变冷 / focusin 兜底会 blur / 我们自己的输入框永不被拦"）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/mobileAdapt 之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -278,6 +281,15 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.4 — 不再误弹输入法；防火墙规则名不再乱码；切换开关不再闪红字
+
+三个用户报的问题，其中两个是**同一个"输入框其实是 contenteditable"的认知错误**的余波：
+
+- **①点小鲸鱼 / 点会话行会弹出输入法**：键盘守卫要求 `TEXTAREA || INPUT` 且落在 `[class$="_composerSeat"]` 里，而输入框是 Lexical 的 **contenteditable** ⇒ 守卫**从未生效**，官方在挂载、切会话、以及浮层关闭后"把键盘交还 `SessionInput.focus()`"时就把输入法弹出来了。修复见 §3.4：与 Enter 共用 `isComposerField()`，用「3 秒内算正在输入」的窗口决定是否允许聚焦（`pointerdown`/`keydown`/`input` 续期），同时 patch `HTMLElement.prototype.focus` 并用 `focusin` 兜底；顺手修掉两个连带问题——**口令门在手机上不再自动聚焦**（每次 gate 重挂都会弹键盘），**插件自己的输入框不再被 Enter 处理器拦截**（`dshLan_input` 也以 `_input` 结尾，旧选择器会把它当输入框，导致口令框里按 Enter 无效）。
+- **②设置卡片乱码 `(������ѧУ�˻�)`**：PowerShell 的 stdout 走控制台代码页（中文系统 GBK），却按 UTF-8 解码。脚本加 `[Console]::OutputEncoding=[Text.Encoding]::UTF8`，并给规则名加 `sanitizeFirewallNote()` 兜底；`statusParts` 现在只拼非空片段（不会再出现孤零零的 `· `）。
+- **③切换开关时 2 秒红字 `Failed to fetch`**：端口重绑期间的正常失败被当成错误渲染。`fetchStatus()` 在 `REBIND_GRACE_MS` 窗口内（`configure` 成功后打标、`applying: true` 续期）静默重试并保留上一份数据，只有超窗失败才报错。
+- **验证**：`npm test` **164 项全绿**（140 → 164）。真机手感（iOS/Android 的 return 键、中文输入法候选）仍需用户在手机上确认。
 
 ### 1.4.3 — 移动端 Enter 真的换行；防火墙状态不再"明明放行了还说没放行"
 

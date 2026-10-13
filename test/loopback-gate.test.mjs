@@ -211,6 +211,21 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   body = await statusFor(19409);
   check('A0 port range covering the port → open (system)', body.firewallOk === true && body.firewallSource === 'system', `${body.firewallOk}/${body.firewallSource}`);
 
+  // The rule name is shown verbatim in the card. When PowerShell's stdout was
+  // decoded with the wrong codepage the name arrives full of U+FFFD (reported as
+  // "防火墙已放行（系统规则） (������ѧУ�˻�)"): fall back to a neutral label.
+  stub.powershellJson = JSON.stringify({ name: '\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD', port: 'Any', protocol: 'TCP', program: process.execPath });
+  body = await statusFor(19410);
+  check('A0 undecodable rule name falls back to a neutral label', body.firewallOk === true && body.firewallNote === 'Windows rule', `${body.firewallOk}/${JSON.stringify(body.firewallNote)}`);
+
+  stub.powershellJson = JSON.stringify({ name: '远程协助（入站）', port: 'Any', protocol: 'TCP', program: process.execPath });
+  body = await statusFor(19411);
+  check('A0 a legible rule name is kept as-is', body.firewallNote === '远程协助（入站）', JSON.stringify(body.firewallNote));
+
+  stub.powershellJson = JSON.stringify({ name: 'x'.repeat(120), port: 'Any', protocol: 'TCP', program: process.execPath });
+  body = await statusFor(19412);
+  check('A0 a very long rule name is truncated', body.firewallNote.length <= 60 && body.firewallNote.endsWith('…'), `${body.firewallNote.length}`);
+
   stub.netshRuleExists = true;
   stub.powershellJson = '';
 }
@@ -347,6 +362,14 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H client PLUGIN_VERSION matches package.json', client.includes(`const PLUGIN_VERSION = "${pkg.version}";`));
   check('H the client announces its version to the server', client.includes('"x-dsh-lan-client": PLUGIN_VERSION'));
   check('H the server reports a mismatch once', server.includes('WARNING: browser half is'));
+  // 1.4.4 — mojibake, spurious keyboards, and the red "Failed to fetch" flash.
+  check('H the firewall query forces UTF-8 output', server.includes('[Console]::OutputEncoding=[Text.Encoding]::UTF8'));
+  check('H firewall rule names are sanitized before they reach the card', server.includes('sanitizeFirewallNote(system.name'));
+  check('H the card treats a rebind refusal as expected, not as an error', client.includes('isTransientFetchError(message) && (inRebindWindow() || previous?.applying === true)'));
+  check('H a toggle marks the rebind window and keeps polling', client.includes('if (typeof body?.enabled === "boolean") markRebindWindow();'));
+  check('H the gate only auto-focuses on non-phone layouts', client.includes('if (!mobilePortrait) input.focus();'));
+  check('H the keyboard guard shares the composer predicate', client.includes('if (active && isComposerField(this) && !composerIsWarm()) return;') && client.includes('if (!isComposerField(t)) return; // our own inputs keep their Enter'));
+  check('H the obsolete TEXTAREA/INPUT composer test is gone', !client.includes('closest(\'[class$="_composerSeat"]\') !== null && Date.now() - lastComposerTap'));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
@@ -443,16 +466,19 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   stub.netshRuleExists = true;
 }
 
-// ── L. mobile Enter: runs the real interception code on a stubbed DOM ──────
+// ── L. mobile keyboard: real client code on a stubbed DOM ──────────────────
+// Covers BOTH halves of the composer story: Enter → newline (1.4.3) and "never
+// pop the input method unless the user tapped a text field" (1.4.4).
 {
   const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
-  const start = src.indexOf('function composerStructure(el) {');
+  const start = src.indexOf('const COMPOSER_WRAP =');
   const stop = src.indexOf('document.addEventListener("keydown", onKeydownCapture, true);');
   const slice = src.slice(start, stop);
 
-  const makeScope = ({ inComposer = true } = {}) => {
+  const makeScope = () => {
     const dispatched = [];
     const timers = [];
+    const listeners = [];
     class FakeEvent {
       constructor(type, init = {}) {
         Object.assign(this, init);
@@ -466,17 +492,37 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
     class FakeKeyboardEvent extends FakeEvent {}
     class FakeInputEvent extends FakeEvent {}
     class FakeElement {
-      constructor() { this.children = []; this.isContentEditable = true; }
+      constructor(tag = 'DIV', className = '', editable = false) {
+        this.tagName = tag;
+        this.className = className;
+        this.isContentEditable = editable;
+        this.contentEditableAttr = editable ? 'true' : null;
+        this.parent = null;
+        this.children = [];
+        this.dispatched = dispatched;
+        this.focusCalls = 0;
+        this.blurCalls = 0;
+      }
+      getAttribute(name) { return name === 'contenteditable' ? this.contentEditableAttr : null; }
+      // Minimal matcher for the two selector shapes the plugin uses.
+      closest(selector) {
+        const matches = (el) => String(selector).split(',').some((raw) => {
+          const part = raw.trim();
+          const contains = /^\[class\*="(.*)"\]$/.exec(part);
+          if (contains !== null) return String(el.className).includes(contains[1]);
+          const endsWith = /^\[class\$="(.*)"\]$/.exec(part);
+          if (endsWith !== null) return String(el.className).endsWith(endsWith[1]);
+          return false;
+        });
+        for (let el = this; el !== null; el = el.parent) if (matches(el)) return el;
+        return null;
+      }
       querySelectorAll() { return []; }
-      querySelector() { return this.editorRoot ?? null; }
+      querySelector() { return null; }
       dispatchEvent(event) { dispatched.push(event); return true; }
-      closest() { return inComposer ? this.wrap : null; }
+      focus() { this.focusCalls += 1; }
+      blur() { this.blurCalls += 1; }
     }
-    const target = new FakeElement();
-    const editorRoot = new FakeElement();
-    const wrap = new FakeElement();
-    wrap.editorRoot = editorRoot;
-    target.wrap = wrap;
     const api = new Function(
       'active',
       'document',
@@ -484,58 +530,106 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
       'KeyboardEvent',
       'InputEvent',
       'HTMLElement',
-      `${slice}\nreturn { onKeydownCapture, insertLineBreakComposer, composerStructure };`,
+      `${slice}\nreturn { onKeydownCapture, insertLineBreakComposer, composerStructure, isComposerField, markComposerWarm: warmComposer, isComposerWarm: composerIsWarm, getWarmAt: () => composerWarmAt, setWarmAt: (value) => { composerWarmAt = value; } };`,
     )(
       true,
-      { execCommand: () => true },
+      { execCommand: () => true, addEventListener: (type, fn) => listeners.push({ type, fn }) },
       { setTimeout: (fn) => { timers.push(fn); } },
       FakeKeyboardEvent,
       FakeInputEvent,
       FakeElement,
     );
-    return { api, target, wrap, dispatched, timers, FakeKeyboardEvent };
+    const fire = (type, event) => {
+      for (const entry of listeners.filter((l) => l.type === type)) entry.fn(event);
+    };
+    // The composer: a Lexical contenteditable inside the official wrapper.
+    const wrapper = new FakeElement('DIV', 'uV2eYG_input', false);
+    const composer = new FakeElement('DIV', 'lexical', true);
+    composer.parent = wrapper;
+    const outside = new FakeElement('DIV', 'somewhere', false);
+    const ownInput = new FakeElement('INPUT', 'dshLan_input', false);
+    return { api, composer, outside, ownInput, dispatched, timers, listeners, fire, FakeKeyboardEvent };
   };
 
-  const enter = (scope, init = {}) => {
+  const enter = (scope, target, init = {}) => {
     const event = new scope.FakeKeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true, ...init });
-    event.target = scope.target;
+    event.target = target;
     scope.api.onKeydownCapture(event);
     return event;
   };
 
+  // ── Enter = newline, never send ──────────────────────────────────────────
   const plain = makeScope();
-  const plainEvent = enter(plain);
+  const plainEvent = enter(plain, plain.composer);
   check('L plain Enter is swallowed', plainEvent.defaultPrevented === true && plainEvent.propagationStopped === true);
   check('L plain Enter is re-issued as Shift+Enter', plain.dispatched.length === 1 && plain.dispatched[0].key === 'Enter' && plain.dispatched[0].shiftKey === true, JSON.stringify(plain.dispatched.map((e) => e.type + ':' + e.key + ':' + e.shiftKey)));
   check('L the re-issued event is marked so it cannot loop', plain.dispatched[0].__dshLanLineBreak === true);
 
   const composing = makeScope();
-  const composingEvent = enter(composing, { isComposing: true });
+  const composingEvent = enter(composing, composing.composer, { isComposing: true });
   check('L Enter during IME composition is left alone', composingEvent.defaultPrevented === false && composing.dispatched.length === 0);
   const imeKeyCode = makeScope();
-  const imeEvent = enter(imeKeyCode, { keyCode: 229 });
+  const imeEvent = enter(imeKeyCode, imeKeyCode.composer, { keyCode: 229 });
   check('L keyCode 229 (IME) is left alone', imeEvent.defaultPrevented === false && imeKeyCode.dispatched.length === 0);
 
   const shifted = makeScope();
-  const shiftedEvent = enter(shifted, { shiftKey: true });
+  const shiftedEvent = enter(shifted, shifted.composer, { shiftKey: true });
   check('L Shift+Enter keeps the app\'s own behaviour', shiftedEvent.defaultPrevented === false && shifted.dispatched.length === 0);
-  const outside = makeScope({ inComposer: false });
-  const outsideEvent = enter(outside);
+  const outside = makeScope();
+  const outsideEvent = enter(outside, outside.outside);
   check('L Enter outside the composer is untouched', outsideEvent.defaultPrevented === false && outside.dispatched.length === 0);
+  const own = makeScope();
+  const ownEvent = enter(own, own.ownInput);
+  check('L Enter in the plugin\'s own input keeps its normal behaviour', ownEvent.defaultPrevented === false && own.dispatched.length === 0);
 
   const marked = makeScope();
-  const markedEvent = enter(marked, { __dshLanLineBreak: true });
+  const markedEvent = enter(marked, marked.composer, { __dshLanLineBreak: true });
   check('L our own synthetic event is ignored', markedEvent.defaultPrevented === false && marked.dispatched.length === 0);
 
   // If the app ignored the synthetic key, the fallbacks must still fire.
   const fallback = makeScope();
-  enter(fallback);
+  enter(fallback, fallback.composer);
   check('L a fallback is scheduled after the first attempt', fallback.timers.length === 1);
   fallback.timers[0]();
   check('L the beforeinput fallback carries insertLineBreak', fallback.dispatched.some((e) => e.inputType === 'insertLineBreak'), JSON.stringify(fallback.dispatched.map((e) => e.type + ':' + (e.inputType || e.key || ''))));
   check('L a second fallback is scheduled in turn', fallback.timers.length === 2);
   fallback.timers[1](); // legacy execCommand path — must not throw
   check('L the legacy fallback is reached without throwing', true);
+
+  // ── the keyboard must stay down unless the user tapped a text field ──────
+  const cold = makeScope();
+  check('L the Lexical contenteditable counts as the composer field', cold.api.isComposerField(cold.composer) === true);
+  check('L a plain div is not a composer field', cold.api.isComposerField(cold.outside) === false);
+  check('L the plugin\'s own input is not a composer field', cold.api.isComposerField(cold.ownInput) === false);
+  cold.composer.focus();
+  check('L a programmatic composer focus is dropped while cold', cold.composer.focusCalls === 0, `calls=${cold.composer.focusCalls}`);
+  cold.fire('focusin', { target: cold.composer });
+  check('L a cold focusin on the composer is taken back', cold.composer.blurCalls === 1, `blur=${cold.composer.blurCalls}`);
+
+  const warm = makeScope();
+  warm.fire('pointerdown', { target: warm.composer });
+  check('L tapping the composer marks it warm', warm.api.isComposerWarm() === true);
+  warm.composer.focus();
+  check('L the composer may take focus right after a real tap', warm.composer.focusCalls === 1);
+  warm.fire('focusin', { target: warm.composer });
+  check('L a warm focusin is left alone', warm.composer.blurCalls === 0);
+  warm.ownInput.focus();
+  check('L focus on the plugin\'s own input is never blocked', warm.ownInput.focusCalls === 1);
+
+  const stale = makeScope();
+  stale.fire('pointerdown', { target: stale.outside });
+  check('L a tap outside the composer does not warm it', stale.api.getWarmAt() === 0 && stale.api.isComposerWarm() === false, `warmAt=${stale.api.getWarmAt()}`);
+  stale.composer.focus();
+  check('L focus stays blocked after an unrelated tap', stale.composer.focusCalls === 0);
+
+  // Warmth is a 3s window, not a latch: after it lapses, the same programmatic
+  // focus is dropped again (no need to sit through three real seconds).
+  const expired = makeScope();
+  expired.api.markComposerWarm();
+  expired.api.setWarmAt(Date.now() - 4000);
+  check('L warmth expires after ~3s', expired.api.isComposerWarm() === false);
+  expired.composer.focus();
+  check('L a focus after the warmth expired is dropped again', expired.composer.focusCalls === 0);
 }
 
 // ── M. locale strings: the escaped Chinese must decode to what was intended ─
