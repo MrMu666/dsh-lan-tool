@@ -645,6 +645,55 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('M zh firewall.bad still reads 防火墙未放行（需管理员权限）', value('firewall.bad') === '防火墙未放行（需管理员权限）', String(value('firewall.bad')));
 }
 
+// ── N. switch ON: the desktop shell's launch-token exchange survives ───────
+//
+// The desktop shell authenticates itself by fetching the Host's own
+// `/?token=…` URL and demanding exactly `303` + `Set-Cookie`. Short-circuiting
+// every host request with `return true` hands it a 200 instead, so the shell
+// throws `Desktop Host authentication failed` and the desktop app cannot start
+// (1.4.4 regression). Carrying the process token IS being the host: the shell
+// must reach DSH's own rule, which decides 303/401 by the token alone.
+{
+  const h = makeHarness({ bindHost: '0.0.0.0' });
+  for (const peer of LOCAL_PEERS) {
+    for (const host of HOSTS) {
+      const res = makeRes();
+      const allowed = h.connection.browserAuth.authorizeIndex(makeReq({ peer, host, url: '/?token=abc' }), res);
+      check(
+        `N shell token exchange delegates to DSH (peer=${peer} host=${host})`,
+        allowed === OFFICIAL_AUTHORIZE && res.statusCode === 0,
+        `allowed=${JSON.stringify(allowed)} status=${res.statusCode}`,
+      );
+    }
+  }
+  // The carve-out is exactly "GET / with a token parameter" — nothing wider.
+  check('N a tokenless host request stays local', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), makeRes()) === true);
+  check('N a token on a non-root path stays local', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/api?token=abc' }), makeRes()) === true);
+  check('N POST / with a token stays local', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/?token=abc' }), makeRes()) === true);
+  // `has()` semantics (agreed): the parameter merely existing counts, so an
+  // empty value is DSH's to judge (its own tokenMatches then answers 401).
+  check('N empty ?token= still delegates to DSH', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=' }), makeRes()) === OFFICIAL_AUTHORIZE);
+  check('N a repeated ?token= still delegates to DSH', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=a&token=b' }), makeRes()) === OFFICIAL_AUTHORIZE);
+  // The password gate is a different function and must NOT learn about tokens.
+  check('N a token never bypasses requestRejection', h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', url: '/?token=abc' })) === 403);
+
+  // Re-applying the same plugin row must not stack the delegation: the guard
+  // has to compare both the connection and its browserAuth.
+  const before = h.calls.authorize;
+  const res = makeRes();
+  h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=abc' }), res);
+  const single = h.calls.authorize - before;
+  h.ctx.webServer.host = '0.0.0.0';
+  plugin.apply(h.ctx, {});
+  const res2 = makeRes();
+  h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=abc' }), res2);
+  check(
+    'N re-applying the row does not stack delegations',
+    single === 1 && h.calls.authorize - before === 2 && res2.statusCode === 0,
+    `single=${single} total=${h.calls.authorize - before} status=${res2.statusCode}`,
+  );
+}
+
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);
 for (const f of fails) console.log('  FAIL: ' + f);
 rmSync(HOME, { recursive: true, force: true });

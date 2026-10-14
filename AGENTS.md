@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.4 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.4.5 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
@@ -150,6 +150,8 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - 口令门拒绝时会打一行去重日志 `password gate: … — peer=… is not an address of this machine (host=…)`：万一主机又被挡住，这行日志直接指出被判成"非本机"的 peer/host（1.4.0 时这种事故在日志里是完全静默的）。
 - **唯一闸门**是 `connection.requestRejection(request)`（`@deepseek-ai/dsh-client-connection/lib/index.js`：Host/Origin 围栏 + 浏览器会话），`admit()` 调它，RPC 路由与 fetch/WS 处理器都走 `admit` ⇒ 直接替换实例方法即可覆盖全部入口。
 - `browserAuth.authorizeIndex(req,res)` 只认 `GET /` 上的 token；兑换成功写 authority 绑定的 `HttpOnly; SameSite=Strict` cookie 并 303 到 `./`。`connection.authenticatedUrl(base)` 给 URL 挂进程 token（token 是**进程内存**随机值，磁盘上不存在）。
+- **桌面壳的启动握手绝不能被 `patchedAuthorize` 短路（1.4.5 的教训，改 `patchedAuthorize` 前必读）**：桌面端启动时 `main.js` 的 `authenticateWebHost()` 会 `fetch(ready.url, { redirect:"manual" })` 并**要求 `status === 303 && set-cookie !== null`**，否则抛 `Error: Desktop Host authentication failed`，主进程弹出"DeepSeek Harness is unavailable"对话框（第三个按钮是"禁用第三方插件，备份 profile 补丁并重启"）。而 1.4.1–1.4.4 的 `patchedAuthorize` 写的是 `if (local) return true` —— **主机自己一律直接放行**，于是壳拿到的是 `200 + text/html`（走 `frontend-static` 的 `serveStatic()` 直接下发 SPA），启动必失败。触发条件是"**局域网开**的时候重启桌面端"：`boundToAllInterfaces(ctx)` 为真才装这道闸，而这个覆盖块**持久化在 profile 补丁里**，所以**每一次**启动都会失败，用户只能点那个"禁用第三方插件"按钮（它会把 LAN 块一起删掉）才能进应用 —— 进去后再开 LAN，下次启动又坏，表现为"反复发作"。**现行契约（1.4.5）**：本机分支里，`GET /` 且 `searchParams.has("token")` 时**必须委派** `origAuthorizeIndex.call(browserAuth, req, res)`，让它自己判 `303`/`401`；其余本机请求仍 `return true`。这个让渡是安全的：带进程 token **就等于**是主机（token 只在进程内存里），伪造 token 由官方 `tokenMatches()` 直接 401。**口令闸 `requestRejection` 一行都不用动**（它对本机从来都是 `return undefined`）。回归断言见 `test/loopback-gate.test.mjs` N 段。
+- **`ensureFencePatched` 的重入护栏必须同时比 connection 与 browserAuth**（1.4.5）：只比 `wrap.connection === connection` 时，若将来出现"同一个 connection 换了一个已打补丁的 browserAuth"，`origAuthorizeIndex` 会捕获到 `patchedAuthorize` 自己，形成嵌套委派（先 303 再被 `serveStatic` 写 200）——正是上面那个崩溃以更难查的形态复现。当前 cordis 把二者成对重建，所以到不了，但护栏要挡住这个方向。
 - 官方围栏 `isTrustedApiRequest` 只在 loopback 或命中 `trustedHosts` 时放行，而 `trustedHosts` 是**启动时采样一次**的 LAN 字面量（换 IP/后开开关都可能过期）；本插件用口令门在 `requestRejection` 层放行，因此不依赖它（这也是 `/lanapi` 至今保留的原因之一）。
 - `/lanapi`（前缀路由 + 客户端 `/api`→`/lanapi` 改写）在 0.2.0 已**不是必需**（没有按方法的 loopback 专属层），属**可选简化项**；删它需要一次端到端局域网验证（把走它的官方界面都过一遍），**没做那次验证前保留**。
 - HMR 让"改开关即时生效"成立，但有前提：`dsh-hmr` 要求进程带 `--expose-internals`、`profileContext` 已 provide、且 `appReady` 就绪（桌面启动器实测满足；其它启动路径未验证）。卡片保留"正在生效"提示，未生效时提示重启。
@@ -170,7 +172,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**164 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端键盘**（用打桩 DOM 跑真实的捕获处理器：普通 Enter 被吞并补发 Shift+Enter、IME 组词与 keyCode 229 放行、Shift+Enter 与插件自己的输入框不动、合成事件不自我循环、两级兜底按序触发；以及"冷启动时的程序化聚焦被丢弃 / 点过输入框后放行 / 3 秒后重新变冷 / focusin 兜底会 blur / 我们自己的输入框永不被拦"）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/mobileAdapt 之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**195 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端键盘**（用打桩 DOM 跑真实的捕获处理器：普通 Enter 被吞并补发 Shift+Enter、IME 组词与 keyCode 229 放行、Shift+Enter 与插件自己的输入框不动、合成事件不自我循环、两级兜底按序触发；以及"冷启动时的程序化聚焦被丢弃 / 点过输入框后放行 / 3 秒后重新变冷 / focusin 兜底会 blur / 我们自己的输入框永不被拦"）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/mobileAdapt 之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -281,6 +283,14 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.5 — 局域网开着时桌面端起不来（口令闸短路了桌面壳的启动握手）
+
+- **现象**（用户实机）：早上启动桌面版直接失败，弹出"DeepSeek Harness is unavailable"，`logs\crash-*-host.log` 里是 `phase: startup` + `Error: Desktop Host authentication failed`（`main.js` 的 `authenticateWebHost`）；点对话框第三个按钮"禁用第三方插件，备份 profile 补丁并重启"之后就能进。⇒ 看起来像第三方插件的锅，实际是**本插件 1.4.1 起就有的 bug**：那个恢复按钮顺手把 profile 补丁里的 LAN 受管块一起删了，等于替用户把"局域网访问"关掉。
+- **机制**（详见 §3.6 那条契约）：`authenticateWebHost()` 要求 `status === 303 && set-cookie !== null`，而 `patchedAuthorize` 的 `if (local) return true` 让壳拿到 `200 + text/html`。**只有 `boundToAllInterfaces(ctx)` 为真（=局域网开）时才装这道闸**，所以触发条件正是"局域网开着的时候重启桌面端"；而受管块持久化在 profile 补丁里 ⇒ **每次**启动都失败，用户只能靠那个恢复按钮进应用，进去后再开 LAN 又坏（表现为反复发作、像插件坏了）。
+- **复现与定位手法（值得复用）**：`app.asar` 里 `lib/main.js` 是压缩过的，但**栈行号是准的**（`%20` 是路径里的空格，不是线索缺失）。用 asar 头（`pickle`：16 字节 + JSON 头长度在偏移 12）写出一个只读抽取器即可逐行读官方源码；判定关键在 `main.js:7422 authenticateWebHost` / `7551`（`EADDRINUSE` 会走另一套按钮 ⇒ 崩溃现场就能排除"端口被占"）。真机复现靠"假 main 进程"：直接 `spawn(DeepSeek Harness.exe, ["--expose-internals", <app.asar 内 dsh-desktop-host 入口>, <runtimeDir>, <profileDir>, <primary-runtime>, <pnpm.mjs>, <runtime/bin>])` 并带 `ELECTRON_RUN_AS_NODE=1` + `DSH_HOME=<临时目录>`，从 IPC 收 `{type:"ready",url}` 后对它做 `fetch(url,{redirect:"manual"})`，就能在**不碰用户 profile** 的前提下看到那个 303/200（端口用 19387 之外的值，否则与在跑的实例 EADDRINUSE）。
+- **修复**：本机分支里，`GET /` 且 `requestUrl.searchParams.has("token")` 时委派 `origAuthorizeIndex.call(browserAuth, req, res)`；其余本机请求照旧 `return true`。顺带把 `ensureFencePatched` 的重入护栏改成同时比 `connection` 与 `browserAuth`（见 §3.6 末尾）。**口令闸 `requestRejection` 未改一行。**
+- **验证**：`npm test` **195 项全绿**（164 → 195，新增 N 段 31 项：主机 4 种对端 × 6 种 Host 的令牌交换都必须委派、无令牌/非根路径/非 GET 不委派、空与重复 `?token=` 委派、局域网对端带 token 仍 403、重复 apply 不叠加委派）+ 真机复现（局域网开、`host: 0.0.0.0`）令牌交换 303 + `set-cookie`，且同一进程内 `GET /` 200、伪造 token 401、落地页 200 全部符合预期。
 
 ### 1.4.4 — 不再误弹输入法；防火墙规则名不再乱码；切换开关不再闪红字
 
