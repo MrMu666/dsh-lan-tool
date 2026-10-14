@@ -370,6 +370,11 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the gate only auto-focuses on non-phone layouts', client.includes('if (!mobilePortrait) input.focus();'));
   check('H the keyboard guard shares the composer predicate', client.includes('if (active && isComposerField(this) && !composerIsWarm()) return;') && client.includes('if (!isComposerField(t)) return; // our own inputs keep their Enter'));
   check('H the obsolete TEXTAREA/INPUT composer test is gone', !client.includes('closest(\'[class$="_composerSeat"]\') !== null && Date.now() - lastComposerTap'));
+  // 1.4.6 — the "applying…" line must read as progress (green), not as the
+  // muted status grey or the red error tone.
+  check('H the applying line is rendered with the progress class', client.includes('className: c.pending, children: t("status.applying")'));
+  check('H the progress class uses the official success token', /\.dshLan_pending\{color:var\(--dsw-alias-state-success-primary/.test(client));
+  check('H the progress class is not the error class', !/\.dshLan_pending\{[^}]*state-error/.test(client));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────

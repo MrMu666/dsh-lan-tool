@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.5 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.4.6 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
@@ -51,6 +51,8 @@ README.md / README.en.md   面向用户；**不放更新记录**
 - **刚发布的版本会被 pnpm 的"发布年龄"策略挡住（2026-10-12 实测事故，排查"修了却没生效"先看这条）**：pnpm 默认不安装"太新"的包，而 `dsh-plugin-manager` 只会给**它实际装到的那个版本**在 profile 的 `pnpm-workspace.yaml` 里补一条 `minimumReleaseAgeExclude`。于是当天连着发布 1.4.0 → 1.4.1 → 1.4.2 之后，用户在 Plugins 页输入包名**每次都解析回 1.4.0**（日志现象：`+ dsh-lan-tool ^1.4.0`、`Progress: resolved … reused 1`；证据文件：`<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml`），看起来就是"新版本没修好"，实际是旧版本被反复装上、重启多少次都一样。
   - **判定**：`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 里有没有目标版本 ＋ 安装日志里的 `^<版本>`。
   - **解法**：把目标版本加进该名单（如 `- dsh-lan-tool@1.4.2`），或在 Plugins 页/CLI 显式写 `包名@版本`。**发新版并希望用户立刻装到时，先补这一条**，否则对方拿到的还是上一次的版本。
+  - **作者机 2026-10-14 的现状（重要）**：作者机的 `pnpm-workspace.yaml` 里那 5 条 `dsh-lan-tool@1.4.x` 豁免**已被有意清空**（当时在做彻底卸载）。**因此下次要在作者机装本插件，必须先手动补回 `- dsh-lan-tool@<目标版本>`**，否则 24 小时窗口会把刚发布的版本挡回去 —— 表现就是"明明发了新版，装上的还是旧版"。
+  - **"卸载/安装失败：`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`"与"豁免没生效"是两个不同层次的闸（2026-10-14 实测）**：任何 `install / add / remove` 都会**先拿旧 lockfile 逐条重跑策略**（pnpm 的 lockfile 验证闸），这一步**不认** `minimumReleaseAgeExclude`——所以会出现"09:17 装得上（全新解析，认豁免）、09:48 卸不掉（复检旧 lockfile，不认豁免）"这种自相矛盾的现象，而**包其实在报错前就已经被删掉了**（`node_modules/<pkg>` 已不存在），非零退出码只是复检失败。**解法（实测 exit 0）**：先跑一次 `pnpm install --lockfile-only` 刷新 lockfile 与验证缓存，再重试原命令。日志在 `<profile>/.plugin-manager/logs/operation-*/pnpm.log`（`✓ Lockfile passes…` 与 `✗ Lockfile failed supply-chain policy check` 两行就是判据）。
 - **旧的"补丁路径"（把包拷进 `profiles/node_modules` + 正则改 profile 补丁）已随 1.4.0 的安装脚本一起删除，不要恢复**：那套写法必须与 plugin-manager 抢写同一个 YAML 文件，而且在 0.2.0 里 `webServer.register()` 对重复路由直接抛异常。
 - 装/卸载开关也可用 `writePluginEnabled` 的产物（`@deepseek-ai/dsh-plugin-manager/lib/types/patch.js`：按 **id + 可选 name** 匹配 profile 补丁里的覆盖行，匹配不到就**追加**一条 `{id, disabled}`）。所以覆盖行的 `id`/`name` 必须与新包名一致，改名时别只改一半。
 
@@ -283,6 +285,13 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.6 — 设置卡片里"正在生效…"改用绿色
+
+- **需求**：切换「局域网访问」开关时，卡片里那行"正在生效：正在重新绑定监听，约 2 秒后自动刷新…"要用**绿色**。
+- **改动**：新增 `.dshLan_pending{color:var(--dsw-alias-state-success-primary,#2ea043)}`（`--dsw-alias-state-success-primary` 是官方设计令牌里语义正确的绿，与 `.dshLan_badge` 已在用的 `--dsw-alias-success-fg` 属同一套色系；`#2ea043` 只是与 badge 一致的兜底），并给 `status.applying` 那行挂上 `c.pending`。
+- **为什么不只是"顺眼"**：这行原来与其它状态行一样是 `--dsw-alias-label-secondary`（灰），而它描述的是**正常推进中的过程**；1.4.4 那次"切换时闪红字 `Failed to fetch`"正是同一个 2 秒窗口被读成错误。用绿色把"正在生效"与"出错/警告"（红）在视觉上分开，是那条修复的延续。
+- **验证**：`npm test` **198 项全绿**（195 → 198：新增 3 项静态断言 —— `status.applying` 必须挂 `c.pending`、`.dshLan_pending` 必须用官方 success 令牌、且**不许**用 `state-error`）。
 
 ### 1.4.5 — 局域网开着时桌面端起不来（口令闸短路了桌面壳的启动握手）
 
