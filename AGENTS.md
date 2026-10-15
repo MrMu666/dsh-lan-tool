@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.6 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.4.7 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
 
 ---
 
@@ -246,6 +246,8 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - `npm trust list` 本身也要 2FA（同样是 EOTP），**不能**当无凭据的只读复核用；trust 是否生效以上线结果为准（本次以 CI 首发成功为准）。
 - **死路一条（省得再试）**：想借 Git for Windows 的 mintty 给 npm 一个 TTY 走官方流程不行——mintty 的 `-l/--log` 记录会让子进程 stdout 变成管道（实测 `stdout=no`），TTY 条件照样不成立；直接 `Start-Process mintty` 时 PATH 里也没有 `/usr/bin`，`bash`/`npm` 的 shebang 会找不到 bash。
 - `publish-npm` 的三道守卫（都做成「失败或跳过」，绝不静默发错东西）：包名必须是 `dsh-lan-tool`；`v<package.json version>` 必须等于 tag（不一致直接红灯）；registry 上已有同版本则**跳过**（所以重跑、补跑、给已发布版本重推 tag 都是幂等的）。预发布 tag（含 `-`，如 `v1.5.0-rc.1`）走 `--tag next`，**不动 `latest`**——DSH 装插件解析的是 `latest`，别让它落到 rc 上。
+- **发布后的收尾：把作者机的 `minimumReleaseAgeExclude` 换成新版本（2026-10-14 起为约定）**：每次发完新版，把 `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` 里那条 `- dsh-lan-tool@<旧版本>` **替换**为 `<新版本>`（只留最新一条，删旧），否则 pnpm 的 24 小时窗口会让作者机装不上刚发布的版本（就是 §2 那个坑）。**只改豁免、不要代劳升级**：作者明确要求自己执行安装/升级；改完用 `pnpm config get minimumReleaseAgeExclude --dir <该 profile>` 在**临时副本**里确认 pnpm 真读到了（别为了让 pnpm 读到而在线上 profile 里跑命令）。注意：**分发出去的豁免改不了**（它在别人的 profile 里，不在仓库里），这条只针对作者机。
+- **顺便确认 `npm` 侧真的上线了**：`publish-npm` 成功之后轮询 `https://registry.npmjs.org/dsh-lan-tool` 的 `dist-tags`，`latest` 变成新版本、且新版本 `dist.attestations.provenance.predicateType` 存在，才算发完（别只看 workflow 绿灯）。GitHub 的 Actions/Releases REST API 未认证时**很容易撞 403 限流**，那时以 npm 的 `latest` 为准即可 —— `publish-npm` 是 `needs: release`，它成功就蕴含 Release 已建。
 - **排障要看 verbose**：npm 的 OIDC 失败是**被吞掉的**（`oidc()` 里 `catch` 只写 verbose 日志，然后照常发 → 表现出来的往往是 401/404 而不是"OIDC 失败"）。所以要 `npm publish --loglevel=verbose`，真正的行是 `Failed token exchange request with body message: …`。最常见就是 trusted publisher 没配或 workflow 文件名/owner/repo 对不上。token 兑换靠 `id-token: write` 提供的 `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN`；缺权限时 npm 直接跳过 OIDC（`Skipped because incorrect permissions for id-token`）。
 - **provenance 只对公开仓库自动开**：`oidc()` 里要求 OIDC token 的 `repository_visibility === 'public'` 且包是 public 才会 `opts.provenance = true`；仓库私有时照常发布、只是没有溯源徽章。另外 OIDC 只在 CI 里生效（`ciInfo.GITHUB_ACTIONS` 等），**本机 `npm publish` 永远走普通登录+OTP 路径**，两者不冲突。
 - **回退方案（只在 OIDC 用不了时）**：仓库 secret `NPM_TOKEN` + `env: NODE_AUTH_TOKEN`。注意 npm 已于 2025-12-09 永久吊销 classic token，只能建 granular access token（最长 90 天，需勾 "bypass 2FA"），每季度轮换；能配 OIDC 就别走这条。
@@ -285,6 +287,19 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.4.7 — 移动端小鲸鱼嵌入顶栏：靠左、标题居中，与右侧边栏按钮同尺寸
+
+- **需求**：移动端（竖屏）左上角那个**浮动**小鲸鱼按钮改成**嵌进顶栏**，与顶栏右侧的「展开右侧边栏」按钮**同样大小、左右对称**；标题在中间。
+- **改动**：`seatWhale()` 把小鲸鱼插成 `_titleRow` 的**第一个 flex 子项**（官方右侧按钮在 `_headerCorner`，即该行的最后一个子项），浮动、拖拽与位置持久化（`dsh-lan-whale-pos`）**整体删除**；`_titleRow` 上打 `data-dsh-lan-whale="1"` 作为这些规则的唯一作用域。
+- **样式契约（三条，缺一不可）**：
+  1. `#dshLanWhale` 做成官方那颗 ghost 按钮的等价物：`width/height:28px`、`background:0 0`、`border:none`、`box-shadow:none`、`color:var(--dsw-alias-label-secondary)`（= 官方按钮的实测色 `rgb(97,102,107)`），配 `margin-left:-12px` 让**图标**（而非按钮盒）落在官方那 4px gutter 上。
+  2. `[data-dsh-lan-whale="1"] > :has(> [class$="_titleCluster"]){flex:1 1 auto}` —— **标题簇不是该行的 flex 子项**，官方把它包在一个无类名的 div 里，`._titleCluster{flex:1}` 只在这个包装里生长。不把**包装**撑起来，行内就永远没有富余空间，`margin-left:auto` 会解析成 0（表现为"标题不居中、右侧控件也不贴边"）。
+  3. `[data-dsh-lan-whale="1"] [class$="_titleCluster"]{justify-content:center}` —— 撑开之后簇的内容仍从左边缘排，标题还是贴着鲸鱼；居中要显式声明。
+- **两个踩过的坑（都别再犯）**：
+  - **`[class$="_titleRow"]` 会匹配到小鲸鱼自己**：它的 id 是 `dshLanWhale`，也以 `Whale` 结尾 —— 用它当作用域时，按钮被当成"标题行"，继承了给簇写的 `margin-left:auto`，直接飘到行中间。**所有规则只准用 marker 属性作用域。**
+  - **`\\\"` 是双重转义**：在双引号 JS 字符串里要写 `\"`，写成 `\\\"` 会让选择器编译成 `[data-dsh-lan-whale="\"1\""]` 而**匹配不到任何东西**（静默失效）。回归断言里两条都锁住了（`H no whale rule is scoped by the title row class`、`H the marker rules are not double-escaped`）。
+- **验证**：`npm test` **209 项全绿**（206 → 209）。真机几何用"最小 harness"量（把官方相关 CSS + 本仓库 `ADAPT_CSS` 注入一个空白页，按官方结构搭出 title row/cluster/corner）：390px 视口下 鲸鱼 `x=8`、标题簇中心 `189`（视口中心 195）、右侧按钮右缘距边 `12` —— 左/中/右成立，两个按钮同为 28×28、同色、无底色/边框/投影。
 
 ### 1.4.6 — 设置卡片里"正在生效…"改用绿色
 

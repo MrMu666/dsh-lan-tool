@@ -375,6 +375,26 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the applying line is rendered with the progress class', client.includes('className: c.pending, children: t("status.applying")'));
   check('H the progress class uses the official success token', /\.dshLan_pending\{color:var\(--dsw-alias-state-success-primary/.test(client));
   check('H the progress class is not the error class', !/\.dshLan_pending\{[^}]*state-error/.test(client));
+  // v85 — the whale is the title row's FIRST flex child, so the official
+  // `_titleCluster{flex:1}` centres the session title between it and the
+  // official right-sidebar control at the far end. Same 28px ghost button.
+  check('H the whale is seated as the title row\'s first child', client.includes('function seatWhale()') && client.includes('row.insertBefore(whaleEl, row.firstChild)'));
+  check('H the title row carries the seat marker', client.includes('row.setAttribute("data-dsh-lan-whale", "1")'));
+  check('H the title wrapper takes the free space', client.includes('[data-dsh-lan-whale=\\"1\\"] > :has(> [class$=\\"_titleCluster\\"]){flex:1 1 auto !important;min-width:0}'));
+  check('H the title cluster content is centred', client.includes('[data-dsh-lan-whale=\\"1\\"] [class$=\\"_titleCluster\\"]{justify-content:center}'));
+  // The whale's id ends in "Whale", so `[class$="_titleRow"]` matches the BUTTON
+  // too — every scoped rule must key off the marker attribute instead.
+  check('H no whale rule is scoped by the title row class', !/\[class\$=\\"_titleRow\\"\]\[data-dsh-lan-whale\]/.test(client) && !/\[class\$=\\"_titleRow\\"\] \[class\$=\\"_headerCorner\\"\]/.test(client));
+  // Double-escaped quotes compile to a bogus attribute value that matches
+  // nothing — that silently disabled the centring rule once already.
+  check('H the marker rules are not double-escaped', !client.includes('data-dsh-lan-whale=\\\\\\"1\\\\\\"'));
+  check('H the whale rule no longer carries the corner ordering', !/#dshLanWhale\{order:0/.test(client) && !client.includes('> [data-slot$=\\\"header.corner\\\"]{order:1}'));
+  // Property order inside the rule is not significant, so check each one.
+  const whaleRule = /#dshLanWhale\{[^}]*\}/.exec(client)?.[0] ?? '';
+  check('H the whale is glyph-only (no background, border or shadow)', whaleRule.includes('background:0 0') && whaleRule.includes('border:none') && whaleRule.includes('box-shadow:none'), whaleRule.slice(0, 80));
+  check('H the whale matches the official 28px control', whaleRule.includes('width:28px') && whaleRule.includes('height:28px'), whaleRule.slice(0, 80));
+  check('H the floating whale and its drag persistence are gone', !client.includes("dsh-lan-whale-pos") && !client.includes("function applyWhalePos") && !client.includes("whaleSuppressClick"));
+  check('H the floating placement and the title reserve are gone', !client.includes("#dshLanWhale{position:fixed") && !client.includes("dsh-lan-rail-hidden [class$=\\\"_titleRow\\\"]{padding-left"));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
