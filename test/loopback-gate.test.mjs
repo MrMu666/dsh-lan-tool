@@ -13,9 +13,9 @@
 //
 // Run: node test/loopback-gate.test.mjs   (no dependencies; ~1s)
 import { registerHooks } from 'node:module';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-lan-test-'));
 process.env.DSH_HOME = HOME;
@@ -307,8 +307,29 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const localRes = makeRes();
   await configure.handler(makeReq({ peer: '127.0.0.1', host: '[::1]:19387', method: 'POST', url: '/dsh-lan/configure', body: { enabled: true } }), localRes);
   check('E host configure accepted behind [::1]', localRes.statusCode === 200, `status=${localRes.statusCode} body=${localRes.body.slice(0, 120)}`);
+
+  // v1.5.0 — the toggle MUST NOT write a `webserver` override any more. On DSH
+  // 0.2.1-rc.2 the schema rejects wildcard bind addresses and `webserver` is a
+  // required row, so a leftover `host: '0.0.0.0'` block does not merely expose
+  // the port: the app refuses to start (measured 2026-10-17). The desire lives
+  // in the state file; the LAN door is the plugin's own proxy.
   const written = existsSync(PATCH) ? readFileSync(PATCH, 'utf8') : '';
-  check('E patch carries the managed LAN block', written.includes('dsh-lan-tool LAN block') && written.includes("host: '0.0.0.0'"));
+  check('E toggle writes no webserver override at all', !written.includes('id: webserver') && !written.includes('0.0.0.0') && !written.includes('LAN block'), JSON.stringify(written).slice(0, 140));
+  const stateFile = join(HOME, 'dsh-lan.json');
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  check('E toggle records the desire in the state file', state.lanEnabled === true, JSON.stringify(state).slice(0, 120));
+  check('E status reports the desired state', JSON.parse(localRes.body).desiredEnabled === true, localRes.body.slice(0, 120));
+
+  // A block an older version left behind is stripped on activation: this plugin
+  // cannot run at all while the webserver row is failing, so a bricked profile
+  // needs exactly this (plus the README's manual step for the already-bricked
+  // case, where no plugin code can run).
+  writeFileSync(stateFile, JSON.stringify({ ...state, lanEnabled: false }));
+  mkdirSync(dirname(PATCH), { recursive: true });
+  writeFileSync(PATCH, "# keep me\n- id: ui-chat\n  config: {}\n\n# --- dsh-lan-tool LAN block (managed - do not edit) ---\n- id: webserver\n  config:\n    host: '0.0.0.0'\n    port: 1\n# --- end dsh-lan-tool LAN block ---\n");
+  makeHarness({ bindHost: '127.0.0.1' });
+  const after = readFileSync(PATCH, 'utf8');
+  check('E a leftover wildcard block is stripped on activation', !after.includes('LAN block') && !after.includes('0.0.0.0') && after.includes('ui-chat'), JSON.stringify(after).slice(0, 160));
 }
 
 // ── F. password + LAN gate end to end ──────────────────────────────────────
@@ -395,6 +416,23 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the whale matches the official 28px control', whaleRule.includes('width:28px') && whaleRule.includes('height:28px'), whaleRule.slice(0, 80));
   check('H the floating whale and its drag persistence are gone', !client.includes("dsh-lan-whale-pos") && !client.includes("function applyWhalePos") && !client.includes("whaleSuppressClick"));
   check('H the floating placement and the title reserve are gone', !client.includes("#dshLanWhale{position:fixed") && !client.includes("dsh-lan-rail-hidden [class$=\\\"_titleRow\\\"]{padding-left"));
+  // v1.5.0 — the LAN door is the plugin's own proxy, gated by makeLanAdmit().
+  // Locked here because the opt-in test/lan-proxy-e2e.mjs is what FOUND the
+  // missing token carve-out (its last hop was refused on the LAN), and `npm
+  // test` must catch that regression too.
+  check('H the proxy is the only LAN door and takes the injected gate', server.includes('createLanProxy({') && server.includes('admit: makeLanAdmit(ctx)'));
+  check(
+    'H the LAN gate admits the launch-token exchange',
+    server.includes('if (req.method === "GET" && url.pathname === "/" && url.searchParams.has("token")) return true;'),
+    'the mint flow ends on GET /?token=… through the proxy — without this carve-out the LAN login cannot complete'
+  );
+  check('H the LAN gate keeps the landing flow reachable', server.includes('if (url.pathname.startsWith("/dsh-lan/")) return true;'));
+  check('H nothing writes a webserver override any more', !server.includes('`    host: ') && !server.includes('"- id: webserver"') && !server.includes('host: \'${ALL_INTERFACES}\''));
+  // v1.5.0 — the card must not call a loopback bind "the LAN bind" now that the
+  // door is the proxy, and the "applying" line must not claim a socket rebind.
+  check('H the card labels the loopback listener when proxied', client.includes('data.proxied === true ? t("status.bindLocal") : t("status.bind")'));
+  check('H the proxy explanation is localized', (client.match(/"status\.proxy":/g) ?? []).length === 2);
+  check('H the applying line no longer claims a socket rebind', !client.includes('正在重新绑定监听') && !client.includes('re-binding the listening socket'));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
@@ -717,6 +755,98 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
     single === 1 && h.calls.authorize - before === 2 && res2.statusCode === 0,
     `single=${single} total=${h.calls.authorize - before} status=${res2.statusCode}`,
   );
+}
+
+// ── O. v1.5.0 LAN proxy: the door, its gate, and the tunnel ────────────────
+//
+// DSH can no longer BE the LAN door: 0.2.1-rc.2 rejects wildcard bind addresses
+// (and `webserver` is required, so the app would not start), while the desktop
+// shell authenticates against a URL it builds with a hardcoded 127.0.0.1, so any
+// concrete non-loopback bind breaks its handshake. The door is therefore this
+// plugin's own reverse proxy forwarding to the loopback listener.
+//
+// The gate cannot be DSH's: forwarded connections arrive from 127.0.0.1, which
+// DSH's peer test rightly reads as "the host machine". So the proxy decides.
+{
+  const { createServer } = await import('node:http');
+  const net = await import('node:net');
+  const { createLanProxy } = await import('../lib/lan-proxy.js');
+
+  const upstream = createServer((req, res) => {
+    res.writeHead(200, {
+      'content-type': 'text/plain',
+      'x-upstream-host': String(req.headers.host ?? ''),
+      'x-upstream-url': String(req.url ?? '')
+    });
+    res.end('upstream-ok');
+  });
+  upstream.on('upgrade', (req, socket) => {
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    socket.write('pong-from-upstream');
+  });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const port = upstream.address().port;
+
+  // 127.0.0.2: a real loopback address that is NOT 127.0.0.1, so the test proves
+  // the same-port-different-address bind without touching a LAN interface.
+  // The predicate mirrors makeLanAdmit()'s contract: the landing flow must stay
+  // reachable without a credential (it is where one is obtained), everything
+  // else needs it. The proxy itself applies no path policy of its own.
+  const proxy = createLanProxy({
+    target: () => ({ host: '127.0.0.1', port }),
+    admit: (req) => String(req.url ?? '').startsWith('/dsh-lan/') || req.headers['x-test-credential'] === 'yes',
+    addresses: () => ['127.0.0.2'],
+    log: () => {}
+  });
+  const bound = await proxy.refresh();
+  check('O proxy binds the LAN address on the DSH port', bound.length === 1 && bound[0] === '127.0.0.2', JSON.stringify(bound));
+  check('O proxy reports listening', proxy.listening() === true);
+
+  const base = `http://127.0.0.2:${String(port)}`;
+  const denied = await fetch(`${base}/`, { redirect: 'manual' });
+  check(
+    'O bare / without a credential gets the landing redirect',
+    denied.status === 302 && denied.headers.get('location') === '/dsh-lan/',
+    `${String(denied.status)} ${String(denied.headers.get('location'))}`
+  );
+  const deniedApi = await fetch(`${base}/api/whatever`, { redirect: 'manual' });
+  check('O a non-index path without a credential is refused', deniedApi.status === 403, String(deniedApi.status));
+  const landing = await fetch(`${base}/dsh-lan/`, { redirect: 'manual' });
+  check('O /dsh-lan/* stays reachable without a credential', landing.status === 200 && (await landing.text()) === 'upstream-ok', String(landing.status));
+
+  const allowed = await fetch(`${base}/some/path?q=1`, { headers: { 'x-test-credential': 'yes' } });
+  const text = await allowed.text();
+  check('O a credentialed request is forwarded', allowed.status === 200 && text === 'upstream-ok', `${String(allowed.status)} ${text}`);
+  check(
+    'O the browser Host is preserved, not rewritten to loopback',
+    allowed.headers.get('x-upstream-host') === `127.0.0.2:${String(port)}`,
+    String(allowed.headers.get('x-upstream-host'))
+  );
+  check('O path and query survive the hop', allowed.headers.get('x-upstream-url') === '/some/path?q=1', String(allowed.headers.get('x-upstream-url')));
+
+  const rawUpgrade = (credential) => new Promise((resolve) => {
+    const socket = net.connect(port, '127.0.0.2', () => {
+      socket.write(
+        `GET /ws HTTP/1.1\r\nHost: 127.0.0.2:${String(port)}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+        `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n` +
+        `${credential ? 'x-test-credential: yes\r\n' : ''}\r\n`
+      );
+    });
+    let data = '';
+    const finish = () => { try { socket.destroy(); } catch {} resolve(data); };
+    socket.setTimeout(3000, finish);
+    socket.on('data', (chunk) => { data += chunk.toString(); if (data.includes('pong-from-upstream') || data.includes('403')) finish(); });
+    socket.on('close', finish);
+    socket.on('error', finish);
+  });
+  const tunneled = await rawUpgrade(true);
+  check('O WebSocket upgrades are tunneled through', tunneled.includes('101 Switching Protocols') && tunneled.includes('pong-from-upstream'), JSON.stringify(tunneled.slice(0, 70)));
+  const refused = await rawUpgrade(false);
+  check('O a credential-less upgrade is refused', refused.includes('403'), JSON.stringify(refused.slice(0, 60)));
+
+  proxy.stop();
+  check('O stop() closes the listeners', proxy.listening() === false);
+  upstream.close();
 }
 
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);

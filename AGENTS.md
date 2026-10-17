@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.4.7 ↔ DeepSeek Harness 桌面版 0.2.0-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.0-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。
+当前基线：**dsh-lan-tool 1.5.0 ↔ DeepSeek Harness 桌面版 0.2.1-rc.2**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.1-rc.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）。**
 
 ---
 
@@ -13,10 +13,13 @@ dsh-lan-tool 是 DeepSeek Harness（DSH）Web GUI 的局域网访问插件，双
 ```
 package.json      name=dsh-lan-tool；dsh.bundle.patch / dsh.compatibility / dsh.client.{platform,inject}
 cordis.patch.yml  bundle 补丁：只有一条 insert 行，**故意不写 webserver 覆盖**
-lib/index.js      node 半边（host 平面）：profile 补丁受管块、防火墙、口令门、/lanapi、/dsh-lan/*
+lib/index.js      node 半边（host 平面）：状态文件、防火墙、口令门、/lanapi、/dsh-lan/*、反代的装配与门禁
+lib/lan-proxy.js  局域网反向代理（v1.5.0 起"局域网访问"的实现本体）：按接口地址监听 + HTTP/WS 反代
 lib/client.js     浏览器半边：登录门、移动端触控适配、设置页「局域网访问」卡片、侧栏锁定按钮、工作区目录选择器（影子）
 lib/landing.html  门后落地页（口令 → /dsh-lan/unlock → /dsh-lan/mint → 干净 /）
 README.md / README.en.md   面向用户；**不放更新记录**
+test/loopback-gate.test.mjs   `npm test`（离线，自包含）
+test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会占用局域网监听端口）
 ```
 
 - `package.json` 的 `dsh.client.platform = "web"`、`dsh.client.inject` 决定客户端半边被谁加载、按什么顺序加载；`type: module`。
@@ -58,7 +61,9 @@ README.md / README.en.md   面向用户；**不放更新记录**
 
 ### 2.1 本机（作者机）开发循环
 
-本机状态：桌面版 0.2.0-rc.2，`DSH_HOME=C:\Users\MyBook\.dsh`，活动 profile = `desktop`（`profiles/` 下只有它），GUI 在 `http://127.0.0.1:19387`，端口由桌面启动器硬编码传入。
+本机状态：桌面版 **0.2.1-rc.2**，`DSH_HOME=C:\Users\MyBook\.dsh`，活动 profile = `desktop`（`profiles/` 下只有它）。**端口不再是 19387**：0.2.1 的桌面启动器传 `--port 0`（由 OS 分配），所以每次启动的端口都不同 —— 要连它请从窗口标题、日志或 `/dsh-lan/status` 的 `port` 取当前值（本文档里出现 `19387` 的地方都是离线自测的固定桩端口，不是线上值）。
+
+**版本闸门（0.2.1 新增，先看这条再决定 `package.json` 怎么写）**：`dsh-app-boot` 的 `unmetRequirements()` 只校验**两处** —— 有 `engines.dsh` 时**只**看它（peer 全部忽略），否则逐个检查 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 `peerDependencies`；比较用 `semver.satisfies(..., { includePrerelease: true })`，所以 `"*"` 能满足预发布版。本插件没有 `engines.dsh`，唯一被计入的 peer 是 `@deepseek-ai/dsh-client-connection: "*"` ⇒ **永远通过**（`@deepseek-ai/cordis` 不匹配那两条前缀，直接跳过）。不满足时 plugin-manager 会以 `incompatible-version` 拒绝安装/启用，要用 `dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <rt> --accept-risk` 授权。**⇒ 不要随手给 `peerDependencies` 加具体版本范围**：那等于给自己装一道闸。`package.json` 里 `dsh.compatibility.*` 是**纯元数据**（全 asar 无消费点，只是给人看的），别把它当成会被校验的东西。
 
 ```powershell
 $src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\desktop\node_modules\dsh-lan-tool'
@@ -123,25 +128,30 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 3.5 开关 / 绑定 / 补丁的硬约束（最容易写错的一节）
 
-**0.2.0 的补丁语义**：补丁对目标是 `target[key] = value`，`config` 是**整块替换**，不是深合并；`webserver` 的 schema 里 `host`/`port` 是 `.required()`、`compression*` 有默认值，而 **`DEFAULT_COMPRESSION = "none"`**（`@deepseek-ai/dsh-host-webserver/lib/index.js`）。
+**补丁语义**：补丁对目标是 `target[key] = value`，`config` 是**整块替换**，不是深合并；`webserver` 的 schema 里 `host`/`port` 是 `.required()`、`compression*` 有默认值，而 **`DEFAULT_COMPRESSION = "none"`**（`@deepseek-ai/dsh-host-webserver/lib/index.js`）。0.2.1 起 schema 还多了可选的 **`tls`**（`{certFile,keyFile}`），官方那行写的是 `tls: !!js ctx.webStartup.tls`。
 
-⇒ **任何一条 `- id: webserver / config:` 覆盖必须重述全部五个键**（`host`、`port`、`compression`、`compressionLevel`、`compressionThresholdBytes`）。少写 `port` ⇒ 配置校验失败（fiber FAILED，比丢 gzip 更糟）；少写三键 ⇒ 静默丢 gzip（页面变慢，不报错）。
+⇒ 如果哪天真要写一条 `- id: webserver / config:` 覆盖，**必须重述全部键**（`host`、`port`、`tls`、`compression`、`compressionLevel`、`compressionThresholdBytes`）：少写 `port` ⇒ 校验失败（fiber FAILED）；少写三键 ⇒ 静默丢 gzip。**但见下：本插件在任何情况下都不许写这条覆盖。**
 
-本插件当前的设计（选项 A）：
+**v1.5.0 的设计：局域网门是插件自己的反向代理，不是 DSH 的绑定**
 
-- **bundle 补丁里完全没有 `webserver` 行** ⇒ "关"就是"没有任何覆盖"，官方兜底 `127.0.0.1` + 官方 gzip 全部保留。官方那唯一一条 `webserver` 行在 `@deepseek-ai/dsh-web-app/cordis.patch.yml`。
-- **"开" = 往活动 profile 的 `cordis.patch.yml` 写一段受管块**（`# --- dsh-lan-tool LAN block ---`，host `0.0.0.0`，五键齐全）；**"关" = 删掉这段块**。唯一写入者是 `setLanBlock()`，模板在 `lanBlock()`，三键取值直接抄当前 `ctx.webServer.config`，不硬编码。
-- **权威状态是真实绑定，不是补丁文件**：`buildStatus().enabled = ctx.webServer.host === "0.0.0.0"`，`desiredEnabled` 才来自补丁块；两者不一致时 `applying: true`（卡片显示"正在生效…"，因为 HMR 有写稳定窗口 + debounce，约 2 秒）。**口令门也按真实绑定判定**（`boundToAllInterfaces(ctx)`），所以"文件已写关、socket 还没重绑"的那一瞬间仍然 fail-safe。
-- `profile` 名字与补丁路径**必须**取 `profileContext`（`@deepseek-ai/dsh/lib/profile-boot-*.js` 在启动时 `provide("profileContext", { name, dir, patchPath, home, … })`）：写死 `"web"` 是 1.3.x 的头号静默 bug（开关读写 `profiles/web/cordis.patch.yml`，而桌面版读 `profiles/desktop/…`）。`cordis.patch.yml` 里 insert 行的 `config.profile` 只是兜底。
-- **切换开关那 2 秒属于"正在生效"，不是错误**（1.4.4）：改写补丁后 harness 会重新绑定 socket（`0.0.0.0` ⇄ `127.0.0.1`），期间所有请求被拒/重置，浏览器只会给一句 `Failed to fetch`。客户端的 `fetchStatus()` 因此在 `REBIND_GRACE_MS`（8 秒；`markRebindWindow()` 在 `configure` 成功后立刻打上，服务端报 `applying: true` 时也会续期）内把这类网络错误当预期：保留上一份 `data`、退回"正在生效…"、400ms 后重试；只有超出窗口的失败才显示红字（≤1.4.3 每次切换都会闪一下"加载失败：Failed to fetch"）。**判据是"网络类错误 **且** 处于窗口内"，不是"任何错误都吞"**（`isTransientFetchError()`：Failed to fetch / NetworkError / Load failed / aborted / timeout / HTTP 502-504）。
+- **硬规则一：永远不写 `webserver` 覆盖。** 0.2.1 的 `host` 是 `z.transform` —— 非 IP 字面量、以及任何通配地址（`0.0.0.0`/`::`）都被**拒绝**；而 `webserver` 是 **required** 行 ⇒ 校验失败 ⇒ 整个 Host 起不来。已在 2026-10-17 实测：用户升级到 0.2.1 后启动失败，只能点"禁用第三方插件"恢复按钮（那次崩溃报告就是 `webserver … wildcard … is not supported`）。因此 `lib/index.js` 里**没有任何**生成覆盖的代码：该文件唯一的写入者是 `clearLanBlock()`（只删不写）。
+- **硬规则二：也不许把 host 改成具体局域网 IP。** 桌面启动器写死 `args: ["--no-open","--host","127.0.0.1","--port","0"]`，而桌面壳的认证 URL 是它自己拼的 `http://127.0.0.1:<port>/?token=…`。**隔离实测**：把 host 覆盖成具体的 `127.0.0.2` 后 Host 能起来，但壳的令牌交换直接 `ECONNREFUSED 127.0.0.1:<port>` ⇒ 桌面端同样起不来。⇒ **DSH 自己的监听器必须留在回环。**
+- **所以局域网只能靠 `lib/lan-proxy.js`**：在本机**每个局域网接口地址**上另起监听（**复用 DSH 的端口号**——同端口不同具体地址可以并存，2026-10-17 在本机实测 `127.0.0.1:21999` + `192.168.192.103:21999` + `192.168.0.207:21999` 同时绑定成功），把 HTTP 与 WebSocket upgrade 反代到 `127.0.0.1:<port>`。
+  - **绑定的是具体地址、不是通配**：上游刚以"暴露 RCE 面"为由禁掉通配，我们不该换个地方把它开回来；同时地址集每 `PROXY_REFRESH_MS`（10 秒）复查，Wi-Fi/VPN/DHCP 变化时自动增删监听。
+  - **安全阀**：回环目标连不上时**绝不**开监听（不开一扇转发到空处的门）；监听器一律 `unref()`，不拖住进程退出。
+  - **Host 头原样保留**：连接服务把浏览器会话 cookie 绑在请求 authority 上，改写成 `127.0.0.1:<port>` 会让每个转发请求都"未认证"。
+- **权威状态不是补丁文件，也不再是 DSH 的绑定**：`dsh-lan.json` 的 `lanEnabled` 是**意愿**；`buildStatus().enabled = 代理在听 || DSH 自己绑在非回环地址`（后者覆盖 `dsh web --host <ip>` 这类部署）；`applying = 意愿 !== 代理在听`（刻意只比代理——操作者自己暴露的直连不是开关在等的东西）。
+- `profile` 名字与补丁路径**必须**取 `profileContext`（`@deepseek-ai/dsh/lib/profile-boot-*.js` 在启动时 `provide("profileContext", { name, dir, patchPath, home, … })`）：写死 `"web"` 是 1.3.x 的头号静默 bug（开关读写 `profiles/web/cordis.patch.yml`，而桌面版读 `profiles/desktop/…`）。
+- **切换开关不再重绑 socket**：v1.5.0 只是开/关我们自己的监听，所以"改补丁 → socket 重绑"那个窗口没有了；但客户端的 `fetchStatus()` 仍保留 `REBIND_GRACE_MS`（8 秒）机制：`markRebindWindow()` + `isTransientFetchError()`，因为开监听、地址集变化、防火墙首次放行都仍会产生短暂的网络类错误。**判据是"网络类错误 **且** 处于窗口内"，不是"任何错误都吞"**。
+- **升级自愈的边界（重要）**：`migrateLegacy()` 会把遗留的受管块（含 1.4.x 的 `0.0.0.0` 块）在激活时剥掉——但**已经被它 brick 的 profile 里，插件根本加载不到**（webserver 先失败），所以那种情况只能靠恢复按钮或手删补丁里的块，README 已写步骤。这也意味着**发版后第一件事是检查老用户的补丁**。
 
 ### 3.5.1 卸载/停用后的清理（别删掉这段逻辑）
 
-受管块写在 **profile 补丁**里，而补丁文件不属于插件包：把包删掉，补丁仍然会把 socket 绑到 `0.0.0.0`，此时口令门已随插件消失，只剩官方 cookie 门（此前登录过的设备仍能进），防火墙规则也还开着。所以 dispose 时会走 `scheduleDisposalCleanup()`：
+局域网门是插件自己的监听器，门禁（`admit`）是那个实例的闭包 ⇒ **dispose 必须立刻关掉它**（`proxy.stop()`），不能等定时器，否则一个已经卸载的插件还在对外提供入口。补丁文件与防火墙不属于包，所以要晚一点清理：
 
 - **等 8 秒**再动手（`DISPOSE_CLEANUP_DELAY_MS`），并比对 `applyGeneration`：**热重载会立刻重新 apply 同一行**，从而取消清理；只有"真的没了"（Plugins 页停用 / 卸载 / 包被删）才会等到超时。⇒ 这个机制的**所有失败方向都是"局域网回到关"**，永远不会反向打开。
-- 超时后：删受管块 + 撤防火墙规则，并 log 一行。定时器 `unref()`，不会拖住进程退出；进程在 8 秒内退出（正常关应用）则清理不跑，README 已写手工兜底步骤。
-- 改这段时注意：`setLanBlock(ctx, false, patchPath)` 接收显式路径 —— 定时器回调可能在别的实例已经把 `active` 改掉之后才触发（离线自测里同一进程跑多个 harness 就会这样）。
+- 超时后：`clearLanBlock(patchPath)` 删掉任何遗留受管块 + 撤防火墙规则，并 log 一行。定时器 `unref()`，不会拖住进程退出；进程在 8 秒内退出（正常关应用）则清理不跑，README 已写手工兜底步骤。
+- 改这段时注意：`clearLanBlock(patchPath)` 接收显式路径 —— 定时器回调可能在别的实例已经把 `active` 改掉之后才触发（离线自测里同一进程跑多个 harness 就会这样）。
 
 ### 3.6 认证 / 绑定相关（node 半边）
 
@@ -207,6 +217,17 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 **禁止**：为了让弹窗「看起来正常」而让探针点击「打开」按钮（会落盘创建真实工作区）；在用户的真实浏览器里做写操作。
 
+### 4.4 隔离端到端（真 Host + 真代理，v1.5.0 起）
+
+`node test/lan-proxy-e2e.mjs` —— **可选、不随 `npm test` 跑**（它会真的在局域网接口上监听，Windows 可能弹一次防火墙询问）。它自己搭隔离环境：
+
+- 在 `%TEMP%` 建一个一次性 `DSH_HOME`，profile 文本文件从线上 profile **复制**，`node_modules/dsh-lan-tool` 用 **junction 指向仓库工作树**（所以测的就是当前代码，不需要安装/发布），并把 `dsh-lan-tool` 追加进 `dsh.profile.bundles`；
+- 写 `dsh-lan.json` 时**删掉真实口令**（`passwordHash`/`salt`），只置 `lanEnabled: true`，口令由测试自己在启动后从**主机侧**调 `/dsh-lan/configure` 设一个新值 —— 所以这个测试不需要、也拿不到用户的口令；
+- 用 §7 1.4.5 那条"假 main 进程"手法启动真 Host（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` + asar 内的 `dsh-desktop-host`），收到 `ready` 后按顺序验证 16 项：代理起来且 DSH 仍在回环 / 无凭据的 `/` 302 到落地页、`/api` 403 / 落地页可达 / 错口令拒、对口令过 / mint 302 到**局域网 authority** 的令牌 URL / 令牌兑换 303 + 绑定该 authority 的 cookie / 带 cookie 能拿到 SPA / **补丁里始终没有 `webserver` 覆盖**；
+- 收尾会**优雅关闭**子进程（IPC `shutdown` → 5 秒后 SIGKILL 兜底）：直接 `kill()` 在 Windows 上会留下孤儿 Host，而它还占着局域网监听端口，下一次运行就会撞车（踩过一次）。
+
+**改 `lib/lan-proxy.js`、`makeLanAdmit()`、或任何与代理装配相关的代码后，跑它**（`npm test` 只覆盖代理的传输与门禁语义，跑在 `127.0.0.2` 上，不进真 Host）。
+
 ---
 
 ## 5. 常见反模式（出现即回退）
@@ -217,10 +238,14 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - 在 `single` 插槽的同一 priority 上注册第二个 entry。
 - 没有退避的座位看护（裸跑 `setInterval(seatIfNeeded, 1000)`）。
 - 直接 `props.listDirectory(...)` 而不加 `callListDirectory()` 兜底。
-- **写 `webserver` 覆盖却不重述五键**（丢 gzip / 校验失败）。
-- **按"补丁文件里有没有块"判断开关状态**（必须看 `ctx.webServer.host`）；或用 `config.profile ?? "web"` 去找 profile 补丁。
-- 手工编辑 profile 补丁里的 `dsh-lan-tool LAN block`（写入者只有插件自己）；手工恢复安装脚本那套"正则改 YAML"。
+- **写任何 `webserver` 覆盖**（0.2.1 起这是硬红线：通配被 schema 拒绝而 `webserver` 是 required ⇒ 整个应用起不来；具体非回环地址又会打断桌面壳的 127.0.0.1 握手。见 §3.5）。
+- **按 `ctx.webServer.host === "0.0.0.0"` 判断开关状态**（0.2.1 起不可能成立；开关的意愿在 `dsh-lan.json` 的 `lanEnabled`，实况是"代理在听"）。
+- **把 `admit` 之外的门禁塞进代理**（路径策略只该在 `makeLanAdmit()` 一处；代理模块自身不做任何策略判断，这样它才能被单测驱动）。
+- **忘了令牌兑换的豁免**：mint 流程的最后一跳是 `GET /?token=…` 打到代理上，若门禁只认 cookie，局域网登录就永远完不成（`test/lan-proxy-e2e.mjs` 就是这么抓到的）。
+- 用 `config.profile ?? "web"` 去找 profile 补丁（必须用 `profileContext`）。
+- 手工编辑 profile 补丁里的受管块，或手工恢复安装脚本那套"正则改 YAML"（补丁里现在**不该**有任何本插件的块；`clearLanBlock()` 只负责清理历史遗留）。
 - 试图在局域网页面上"解锁"官方设置栈（`settingsScope` 已不存在，见 §3.4）。
+- **擅自改作者机已安装的插件或替他安装/升级**：作者只授权改仓库代码与 profile 的 `minimumReleaseAgeExclude`；升级由他自己做。要在真机验证就用 §4.4 的隔离方式（junction 到仓库的临时 profile）。
 - 在 README 里堆更新记录或维护须知（约定：README 只作为用户文档；变更与踩坑写进本文件第 7 节或 commit）。
 
 ---

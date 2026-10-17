@@ -2,7 +2,9 @@
 
 dsh-lan-tool — a plugin that brings the [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI to your local network (password-protected; mobile reuses the official desktop UI with an injected portrait touch adaptation).
 
-> ⚠️ **Version requirement: `@deepseek-ai/dsh` `0.2.0-rc.2` and newer** (verified on the 0.2.0-rc.2 desktop build). The 0.1.x APIs (`dsh-host-apiproxy`, dotted endpoints, the client-side `settingsScope` service) are no longer compatible — upgrade DSH first.
+> ⚠️ **Version requirement: `@deepseek-ai/dsh` `0.2.0-rc.2` and newer; verified on the 0.2.1-rc.2 desktop build.** The 0.1.x APIs (`dsh-host-apiproxy`, dotted endpoints, the client-side `settingsScope` service) are no longer compatible — upgrade DSH first.
+>
+> 🔧 **1.5.0 changed how LAN access is implemented (read this before upgrading)**: since 0.2.1 DSH refuses to bind a wildcard address (`0.0.0.0`), while the desktop shell requires DSH itself to stay on `127.0.0.1`. So the plugin **no longer touches any DSH binding**: DSH keeps its official loopback-only listener and **the plugin's own built-in reverse proxy** serves your machine's LAN addresses, **reusing the same port number**. Your LAN URL and workflow are unchanged — but **the override older versions left in the profile patch makes 0.2.1 refuse to start**, so read the [Upgrading](#upgrading-14x--150important) section first.
 
 > 🚀 **Pair it with [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) and [dsh-app](https://github.com/MrMu666/dsh-app) for a better experience.**
 
@@ -11,7 +13,8 @@ dsh-lan-tool — a plugin that brings the [deepseek-harness](https://github.com/
 Once installed, flip "LAN access" on in Settings and the GUI becomes reachable from the LAN (Windows opens the firewall automatically for Domain + Private; Linux tries firewalld / ufw / iptables in order and treats a missing firewall tool as "no rule needed"):
 
 - ✅ **Off by default**: the bundle writes no `webserver` override at all, so the GUI keeps the official default (loopback-only, gzip intact)
-- ✅ **The switch takes effect live**: it writes/removes a managed override in the *active profile's* `cordis.patch.yml`, which the harness hot-reloads and re-binds — **no restart**
+- ✅ **The switch takes effect live**: it opens/closes **the plugin's own LAN reverse proxy** (listening on this machine's LAN addresses and forwarding to DSH's loopback port). It never touches DSH's binding and needs **no restart**; turning it off stops the external listener immediately
+- ✅ **Still the same port**: the LAN URL stays `http://<host-ip>:<DSH-port>`. The proxy forwards the `Host` header unchanged, so credentials behave exactly like the official path
 - ✅ **LAN devices must enter a password before seeing any page**: a device on the network (desktop or phone/tablet) opening `http://<host-ip>:<port>` gets the password page first; the address bar **never shows a token** (the plugin completes the official token→cookie exchange in the background)
 - ✅ **The host machine never needs a password**: opening the GUI on the host itself (desktop app or browser — via `127.0.0.1`, `localhost`, `[::1]`, the machine name or the host's own LAN address) goes **straight in**, with no password page. The test is the **TCP peer address** (loopback or one of this machine's own addresses), not the hostname the page used — which is why the desktop app can never be locked out by its own gate (the bug fixed in 1.4.1).
 - ✅ **Remember password (per device)**: checking "Remember password" stores it in that browser's localStorage; otherwise it is kept only in the current tab (sessionStorage)
@@ -31,6 +34,7 @@ Once installed, flip "LAN access" on in Settings and the GUI becomes reachable f
 
 - The password gate is enforced **server-side**: a request from another machine (i.e. the TCP peer is neither loopback nor one of the host's own addresses) must carry the password (`x-dsh-lan-key` header or session cookie) or it is refused — privileged methods (settings/permissions/credentials) rely on that same gate. Requests from the host machine itself are always admitted, whatever hostname they use; that is deliberate, so the desktop app can never be locked out.
 - **That gate is the whole security boundary.** No password means the LAN is simply unusable (it never degrades into "open without a password"). Anyone who knows the password can read and write all of this DSH's data — enable it only on trusted networks and pick a strong password.
+- **In 1.5.0 the LAN entry point binds only this machine's current LAN interface addresses — never a wildcard** (upstream disabled wildcards precisely because "binding every interface would expose remote code execution to the network"). The gate is enforced by that entry point: DSH only ever sees connections from the host's own loopback, so **the outward-facing layer is entirely the plugin's** — which is also why turning the switch off disconnects immediately.
 - Use only on trusted networks (home/office intranet). Turn the switch off on public networks.
 
 ## What LAN clients can do (important)
@@ -84,17 +88,53 @@ Quit the desktop app before running the CLI (`dsh-desktop-host` says so in its m
 
 1. Open DSH → Settings → General → "LAN access";
 2. **Set an access password** (at least 4 characters);
-3. Then flip the switch — the plugin writes the managed override and the binding hot-reloads; the card shows `0.0.0.0` about 2 seconds later;
+3. Then flip the switch — the plugin opens a reverse proxy on this machine's LAN addresses and the card lists the usable URLs within a few seconds;
 4. Open the `http://<host-ip>:<port>` URL shown in the card from a LAN device and enter the password.
 
-> The desktop build uses port `19387` (pinned by the desktop launcher); plain `dsh web` defaults to `3080`. Trust the port the card displays.
+> **The port is chosen by DSH itself** (the 0.2.1 desktop launcher passes `--port 0`, so the OS picks one and it can differ on every start; plain `dsh web` defaults to `3080`). **Trust the address the card displays.**
 
 ### Firewall notes
 
 - **Windows**: a Windows Defender Firewall allow rule named `dsh-lan-tool (auto)` (Domain + Private) is maintained automatically. **Without an elevated shell the first enable triggers the OS "allow access" prompt once** — click Allow and Windows creates its own rule; the card picks that system rule up **automatically** (within seconds it reports "firewall open" with the rule's name) — no admin rights and no restart needed. "firewall blocked (needs admin)" is only reported when neither our rule nor any OS rule admits the port.
 - **Linux**: an allow rule is maintained via firewalld → ufw → iptables (first available). When no supported firewall tool is found the card reports "firewall not managed", which normally means the port is already reachable.
-- **The ~2s around a toggle**: flipping the switch rewrites the config and re-binds the port, so requests fail briefly; the card says "applying…" and retries by itself — **no red error**, and rule names in the status line are decoded as UTF-8 (no mojibake).
-- On every platform, turning the "LAN access" toggle off removes the override and returns to `127.0.0.1` — that is the primary security switch.
+- **The few seconds around a toggle**: the switch opens/closes the plugin's LAN listener, so requests may fail briefly; the card says "applying…" and retries by itself — **no red error**, and rule names in the status line are decoded as UTF-8 (no mojibake).
+- Turning the "LAN access" toggle off **immediately** stops the plugin's LAN listener (DSH itself is loopback-only at all times) — that is the primary security switch.
+- **The listener binds only this machine's current LAN interface addresses, never a wildcard.** When interfaces change (switching Wi-Fi, VPN up/down, a new DHCP lease) the plugin re-checks every 10 seconds and adds/removes listeners, and the card's addresses follow.
+
+## Upgrading (1.4.x → 1.5.0, important)
+
+**If you upgraded DSH to 0.2.1 while "LAN access" was on, DSH will not start.** You get the "DeepSeek Harness is unavailable" dialog and the log (`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log`) says something like:
+
+```
+webserver (required)
+  Error: host "0.0.0.0" is an unspecified (wildcard) address, which is not supported: …
+```
+
+**Why**: 0.2.1's `webserver` row no longer accepts a wildcard bind address (upstream deliberately removed that exposure), and the row is required — so config validation fails and the whole app refuses to boot. Older versions (≤1.4.7) wrote exactly such an override (`host: '0.0.0.0'`) into the profile patch when you flipped the switch on, and **an upgrade does not remove it**, so every start fails. **Your configuration is not corrupt and this is not a DSH bug**; since 1.5.0 the plugin writes no override at all.
+
+Two ways out — pick either:
+
+**A. Use DSH's own button (fastest)**: in the startup-failure dialog, click the third button — "**disable third-party plugins, back up the profile patch and restart**". It backs the patch up, drops third-party bundles and starts normally. Then **upgrade this plugin to 1.5.0 and re-enable it** (1.5.0 cleans up the leftover override by itself).
+
+**B. Delete the block by hand**:
+
+1. Quit DSH completely;
+2. Open `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`;
+3. Delete everything from `# --- dsh-lan-tool LAN block (managed - do not edit) ---` through `# --- end dsh-lan-tool LAN block ---` inclusive (touch nothing else in the file);
+4. Save, start DSH, then upgrade the plugin to 1.5.0.
+
+> Once 1.5.0 is active it also strips any leftover managed block on activation. But on a machine that is already stuck, the plugin never loads at all — hence A or B first, which is exactly why this section exists.
+
+### What changed in 1.5.0
+
+| | 1.4.x | 1.5.0 |
+|---|---|---|
+| DSH's own listener | switched to `0.0.0.0` while on | **always `127.0.0.1`** (official default; the plugin no longer touches it) |
+| LAN entry point | DSH listening on the LAN itself | **the plugin's built-in reverse proxy**, forwarding to DSH |
+| Port | the same | **the same** (the proxy reuses DSH's port number) |
+| Where the switch lives | a managed override in the profile patch | plugin state (`lanEnabled` in `dsh-lan.json`) |
+| Turning it off | delete the override, wait for a hot reload | **stop the external listener immediately** |
+| Password / landing page / firewall | — | unchanged |
 
 ## Upgrading (1.3.x → 1.4.0)
 
@@ -115,7 +155,7 @@ Remove the plugin from the Plugins page, or:
 dsh plugin --profile desktop remove dsh-lan-tool
 ```
 
-On deactivation the password gate goes away immediately, and **the managed bind override is removed by the plugin itself about 8 seconds later**, together with the firewall rule. That window exists to tell a hot reload (which immediately re-applies the plugin and cancels the cleanup) apart from a real removal, so a normal uninstall returns the GUI to **off**.
+On deactivation **the LAN listener is closed immediately** (it is the plugin's own listener and the gate lives inside it, so it cannot wait), while the firewall rule and any leftover managed block in the profile patch are cleaned up about 8 seconds later. That window exists to tell a hot reload (which immediately re-applies the plugin and cancels the cleanup) apart from a real removal, so a normal uninstall returns the GUI to **off**.
 
 Two cases need a manual check (the cleanup never ran):
 
