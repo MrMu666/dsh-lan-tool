@@ -124,6 +124,8 @@ Two ways out — pick either:
 4. Save, start DSH, then upgrade the plugin to 1.5.0.
 
 > Once 1.5.0 is active it also strips any leftover managed block on activation. But on a machine that is already stuck, the plugin never loads at all — hence A or B first, which is exactly why this section exists.
+>
+> ⚠️ **1.5.0 itself has a defect — use 1.5.1 or newer.** 0.2.1 moved API admission into the trust funnel inside `connection.admit()` (`isTrusted`), while 1.5.0's password fence still replaced only the old `requestRejection` — so a LAN device could open the GUI but **every API call answered 403** (visible, unusable). 1.5.1 fixes it (the fence now owns the trust funnel too) and adds an end-to-end assertion that the local and LAN answers must match, so it cannot come back silently.
 
 ### What changed in 1.5.0
 
