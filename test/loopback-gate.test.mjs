@@ -447,6 +447,12 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H admission accepts the password credential', server.includes('connection.admit = patchedAdmit') && server.includes('return { peer: connection.browserPeer };'));
   check('H admission requires a local peer, an open door and the credential', server.includes('if (local && lanDoorOpen(ctx) && hasLanCredential(req)) return { peer: connection.browserPeer };'));
   check('H the admission override is installed and removed with the rest', server.includes('const origAdmit') && server.includes('wrap.connection.admit = wrap.origAdmit'));
+  // 1.5.6 — the card must open with a ONE-LINE RED safety notice (a user requirement,
+  // so it gets asserted rather than left to chance): red via the official error token,
+  // `nowrap` so it stays a single line, and rendered before the title row.
+  check('H the safety notice is a single-line red rule', client.includes('.dshLan_warn{color:var(--dsw-alias-state-error-primary,#d1242f);font-size:12px;line-height:18px;white-space:nowrap}'));
+  check('H the notice is the card\'s first line', /className: c\.row, children: \[[\s\S]{0,600}?className: c\.warn,[\s\S]{0,400}?className: c\.head/.test(client));
+  check('H both locales carry the exact notice text', client.includes('"notice.trusted": "仅适用于在安全可信局域网中使用，请勿在其他网络环境开启"') && (client.match(/"notice\.trusted":/g) ?? []).length === 2);
   // 1.5.5 — through the proxy every LAN client has a loopback peer, so a peer-only
   // test let it change the password / flip the switch / read diagnostics. The proxy
   // stamps what it forwards, and host-only endpoints refuse a stamped request.
