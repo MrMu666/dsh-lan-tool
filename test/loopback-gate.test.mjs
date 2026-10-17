@@ -437,6 +437,15 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   // API call answered 403 — test/lan-proxy-e2e.mjs compares both origins now.
   check('H the fence patches the trust funnel too', server.includes('connection.isTrusted = patchedIsTrusted') && server.includes('const patchedIsTrusted'));
   check('H the trust allowance needs a local peer and an open door', server.includes('if (local && lanDoorOpen(ctx)) return true;'));
+  // 1.5.4 — the event stream goes through `admit()`, which also demands DSH's own
+  // browser session; its cookie name is derived from Host:port and DSH used to change
+  // ports every launch, so a valid LAN client could hold a session that can never
+  // match again and sit on 401 for ever (measured on the user's machine:
+  // `upgrade-open … cookie=true` then `HTTP/1.1 401 Unauthorized`). Admission now
+  // accepts this plugin's password credential and hands back DSH's own browserPeer.
+  check('H admission accepts the password credential', server.includes('connection.admit = patchedAdmit') && server.includes('return { peer: connection.browserPeer };'));
+  check('H admission requires a local peer, an open door and the credential', server.includes('if (local && lanDoorOpen(ctx) && hasLanCredential(req)) return { peer: connection.browserPeer };'));
+  check('H the admission override is installed and removed with the rest', server.includes('const origAdmit') && server.includes('wrap.connection.admit = wrap.origAdmit'));
   check('H the fence is installed for proxied traffic as well', server.includes('function lanDoorOpen(ctx)') && server.includes('return lanProxy !== null && lanProxy.listening();'));
   // 1.5.2 — the LAN port can be pinned, and the card has to offer it.
   check('H the proxy listens on a pinnable port', server.includes('listenPort: lanPortSetting') && server.includes('function lanPortSetting()'));

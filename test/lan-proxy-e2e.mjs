@@ -533,6 +533,19 @@ boot(env, async (local, readyUrl, stop) => {
 			lanWs.startsWith("HTTP/1.1 101") && localWs.startsWith("HTTP/1.1 101"),
 			`lan="${lanWs}" local="${localWs}"`
 		);
+		// 5c2 ── the REAL-WORLD case: a browser whose DSH session cookie belongs to a
+		// DIFFERENT authority. DSH used to pick a new port on every launch and the
+		// cookie name is derived from `Host:port`, so an old cookie never matches a new
+		// port. Such a client still holds the plugin's password cookie — that is what
+		// the LAN door is FOR. HTTP works (the fence admits local peers), but the
+		// WebSocket upgrade goes through `admitConnection → admit`, which additionally
+		// demands DSH's own browser session, so it answered 401 for ever.
+		const lanKeyOnly = await wsProbe(lanBase, `dsh-lan-key=${encodeURIComponent(PASSWORD)}`);
+		check(
+			"5 the event stream admits a password-only client (stale DSH cookie)",
+			lanKeyOnly.startsWith("HTTP/1.1 101"),
+			`status="${lanKeyOnly}"`
+		);
 		// 5d ── and it must be RELEASABLE. DSH refuses a second upgrade for a peer
 		// that already owns one (409 in `admitConnection`) and clears that only when
 		// the socket really closes; LAN clients vanish abruptly all the time (page
