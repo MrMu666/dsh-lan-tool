@@ -126,7 +126,7 @@ function boot({ profile, home }, onReady) {
 		}
 		if (msg?.type !== "ready" || handled) return;
 		handled = true;
-		await onReady(new URL(msg.url).origin, stop);
+		await onReady(new URL(msg.url).origin, msg.url, stop);
 	});
 	setTimeout(async () => { console.log("TIMEOUT"); await stop(); process.exit(5); }, 150000);
 }
@@ -134,8 +134,21 @@ function boot({ profile, home }, onReady) {
 const env = await prepare();
 console.log("isolated home:", env.home);
 
-boot(env, async (local, stop) => {
+boot(env, async (local, readyUrl, stop) => {
 	try {
+		// 0 ── the desktop shell's own handshake. It fetches the ready URL with
+		// redirect:"manual" and demands exactly 303 + Set-Cookie, otherwise it
+		// aborts startup with "Desktop Host authentication failed" — the 1.4.5
+		// regression. It runs FIRST because a broken handshake means the app the
+		// rest of this file describes never starts at all.
+		const own = await step(readyUrl);
+		check(
+			"0 the host's own launch-token exchange → 303 + cookie (shell handshake)",
+			own.status === 303 && own.cookie !== null,
+			`${String(own.status)} cookie=${own.cookie === null ? "null" : "present"}`
+		);
+		const localCookie = String(own.cookie ?? "").split(";")[0];
+
 		// 1 ── the door is open, and DSH itself stayed on loopback
 		const st = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
 		console.log("--- status:", JSON.stringify({ enabled: st.enabled, desired: st.desiredEnabled, applying: st.applying, bindHost: st.bindHost, port: st.port, lanUrls: st.lanUrls, enforcement: st.enforcement }));
@@ -178,6 +191,46 @@ boot(env, async (local, stop) => {
 		check("5 the cookie is a DSH session cookie for this authority", cookie.startsWith("dsh-auth-"), cookie.slice(0, 24));
 		const spa = await step(`${lanBase}/`, { headers: { cookie } });
 		check("5 SPA is served to a cookie-carrying LAN client", spa.status === 200 && spa.body.includes("<html"), `${String(spa.status)} len=${spa.body.length}`);
+
+		// 5b ── the proxy must be TRANSPARENT, not merely reachable: the same path
+		// with the same credentials has to answer the same way locally and over the
+		// LAN. 1.5.0 shipped with this broken — the page loaded over the LAN while
+		// every /api call got a 403, because DSH's own trust funnel
+		// (`isTrustedApiRequest`) rejects a non-loopback Host authority and 1.4.x
+		// only ever patched `requestRejection`, which the API path no longer uses.
+		// Hence these comparisons.
+		check("5 the SPA manifest advertises this plugin", spa.body.includes("dsh-lan-tool"), spa.body.slice(0, 120));
+		const idContext = (spa.body.match(/[^"'\s]{0,70}dsh-lan-tool[^"'\s]{0,70}/) ?? [""])[0];
+		check("5 the manifest names the plugin's browser bundle", /\.js/.test(idContext), idContext || spa.body.slice(0, 200));
+		// 0.2.1 does not spell out a per-plugin URL: client-modules preloads a
+		// manifest whose combo href lists every bundle (`…,dsh-lan-tool/client.js,…`).
+		// Take that href verbatim (HTML-escaped ampersands included) so this stays
+		// a test of the PROXY, not of my ability to reconstruct the URL.
+		const combo = (spa.body.match(/["']([^"']*dsh-lan-tool\/client\.js[^"']*)["']/) ?? [])[1];
+		if (typeof combo === "string") {
+			const href = combo.replace(/&amp;/g, "&");
+			// The combo href is relative (`plugins/?…`), so resolve it against the
+			// document it came from rather than concatenating.
+			const lanBundle = await step(new URL(href, `${lanBase}/`).href, { headers: { cookie } });
+			const localBundle = await step(new URL(href, `${local}/`).href, { headers: { cookie: localCookie } });
+			check(
+				"5 the client bundle is served identically local and via the proxy",
+				lanBundle.status === 200 && localBundle.status === 200 && lanBundle.body === localBundle.body && lanBundle.body.includes("dsh-lan-tool"),
+				`href=${href.slice(0, 60)} lan=${String(lanBundle.status)} local=${String(localBundle.status)} len=${lanBundle.body.length}`
+			);
+		} else {
+			check("5 the client bundle is served identically local and via the proxy", false, `no combo href found; ctx=${idContext}`);
+		}
+		// Same request, both origins, both carrying their own valid session cookie:
+		// an unknown RPC method must be routed (404/400/…) on both — never 403.
+		const rpcInit = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: 1, method: "noop" }) };
+		const lanRpc = await step(`${lanBase}/api/connection`, { ...rpcInit, headers: { ...rpcInit.headers, cookie } });
+		const localRpc = await step(`${local}/api/connection`, { ...rpcInit, headers: { ...rpcInit.headers, cookie: localCookie } });
+		check(
+			"5 the RPC path answers the same local and via the proxy (trust funnel accepts the LAN authority)",
+			lanRpc.status === localRpc.status && lanRpc.status !== 403,
+			`lan=${String(lanRpc.status)} local=${String(localRpc.status)} lanBody=${lanRpc.body.slice(0, 60)}`
+		);
 
 		// 6 ── the invariant this whole release exists for
 		const patch = readFileSync(join(env.profile, "cordis.patch.yml"), "utf8");

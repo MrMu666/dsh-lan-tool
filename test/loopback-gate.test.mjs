@@ -428,6 +428,16 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   );
   check('H the LAN gate keeps the landing flow reachable', server.includes('if (url.pathname.startsWith("/dsh-lan/")) return true;'));
   check('H nothing writes a webserver override any more', !server.includes('`    host: ') && !server.includes('"- id: webserver"') && !server.includes('host: \'${ALL_INTERFACES}\''));
+  // 1.5.1 — the fence must patch the TRUST FUNNEL, not just requestRejection.
+  // 0.2.1 admits /api through connection.admit() (dsh-api-gateway →
+  // admitConnection), which starts with isTrusted() → isTrustedApiRequest(...);
+  // that rule rejects a non-loopback Host authority, and proxied requests keep
+  // the browser's LAN authority on purpose. 1.5.0 patched requestRejection only
+  // (as every 1.4.x did) and shipped a GUI that loaded over the LAN while every
+  // API call answered 403 — test/lan-proxy-e2e.mjs compares both origins now.
+  check('H the fence patches the trust funnel too', server.includes('connection.isTrusted = patchedIsTrusted') && server.includes('const patchedIsTrusted'));
+  check('H the trust allowance needs a local peer and an open door', server.includes('if (local && lanDoorOpen(ctx)) return true;'));
+  check('H the fence is installed for proxied traffic as well', server.includes('function lanDoorOpen(ctx)') && server.includes('return lanProxy !== null && lanProxy.listening();'));
   // v1.5.0 — the card must not call a loopback bind "the LAN bind" now that the
   // door is the proxy, and the "applying" line must not claim a socket rebind.
   check('H the card labels the loopback listener when proxied', client.includes('data.proxied === true ? t("status.bindLocal") : t("status.bind")'));
