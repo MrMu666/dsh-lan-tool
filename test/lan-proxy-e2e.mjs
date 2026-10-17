@@ -231,6 +231,22 @@ boot(env, async (local, readyUrl, stop) => {
 			lanRpc.status === localRpc.status && lanRpc.status !== 403,
 			`lan=${String(lanRpc.status)} local=${String(localRpc.status)} lanBody=${lanRpc.body.slice(0, 60)}`
 		);
+		// …and the path the LAN browser ACTUALLY uses. Its client half calls
+		// `clientIsLocal() === false` on a LAN origin and rewrites `/api` to
+		// `/lanapi`, which this plugin serves by re-issuing the request in-process
+		// as the host. So `/lanapi` — not `/api` — is what carries a real LAN
+		// session's traffic, and it has to answer the same way.
+		const lanApi = await step(`${lanBase}/lanapi/connection`, {
+			method: "POST", headers: { "content-type": "application/json", cookie }, body: rpcInit.body
+		});
+		const localApi = await step(`${local}/lanapi/connection`, {
+			method: "POST", headers: { "content-type": "application/json", cookie: localCookie }, body: rpcInit.body
+		});
+		check(
+			"5 the client half's /lanapi reroute answers the same local and via the proxy",
+			lanApi.status === localApi.status && lanApi.status !== 403,
+			`lan=${String(lanApi.status)} local=${String(localApi.status)} lanBody=${lanApi.body.slice(0, 60)}`
+		);
 
 		// 6 ── the invariant this whole release exists for
 		const patch = readFileSync(join(env.profile, "cordis.patch.yml"), "utf8");
