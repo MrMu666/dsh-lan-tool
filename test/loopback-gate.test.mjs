@@ -370,6 +370,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 {
   const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
   const server = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  const proxySource = readFileSync(new URL('../lib/lan-proxy.js', import.meta.url), 'utf8');
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   check('H no bare isLoopback() call site remains', !/isLoopback\(\)/.test(client));
   check('H the gate asks the server first', client.includes('if ((await detectLocalClient()) !== false) return;'));
@@ -446,6 +447,14 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H admission accepts the password credential', server.includes('connection.admit = patchedAdmit') && server.includes('return { peer: connection.browserPeer };'));
   check('H admission requires a local peer, an open door and the credential', server.includes('if (local && lanDoorOpen(ctx) && hasLanCredential(req)) return { peer: connection.browserPeer };'));
   check('H the admission override is installed and removed with the rest', server.includes('const origAdmit') && server.includes('wrap.connection.admit = wrap.origAdmit'));
+  // 1.5.5 — through the proxy every LAN client has a loopback peer, so a peer-only
+  // test let it change the password / flip the switch / read diagnostics. The proxy
+  // stamps what it forwards, and host-only endpoints refuse a stamped request.
+  check('H the proxy stamps forwarded requests', proxySource.includes('export const PROXY_HEADER') && proxySource.includes('headers[PROXY_HEADER] = PROXY_TOKEN') && proxySource.includes('if (lower === PROXY_HEADER) continue;'));
+  check('H host-only means local AND unstamped', server.includes('function isHostOnlyRequest(req)') && server.includes('return isLocalRequest(req) && !viaProxy(req);'));
+  check('H configure and diag use the host-only test', (server.match(/if \(!isHostOnlyRequest\(req\)\)/g) ?? []).length === 2);
+  check('H the status payload reports hostOnly', server.includes('hostOnly,') && client.includes('const canConfigure = local && data?.hostOnly !== false;'));
+  check('H the card gates its controls on canConfigure', (client.match(/canConfigure \?/g) ?? []).length >= 3);
   check('H the fence is installed for proxied traffic as well', server.includes('function lanDoorOpen(ctx)') && server.includes('return lanProxy !== null && lanProxy.listening();'));
   // 1.5.2 — the LAN port can be pinned, and the card has to offer it.
   check('H the proxy listens on a pinnable port', server.includes('listenPort: lanPortSetting') && server.includes('function lanPortSetting()'));

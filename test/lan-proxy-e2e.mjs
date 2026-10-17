@@ -546,6 +546,24 @@ boot(env, async (local, readyUrl, stop) => {
 			lanKeyOnly.startsWith("HTTP/1.1 101"),
 			`status="${lanKeyOnly}"`
 		);
+		// 5f ── host-only endpoints must not accept a proxied request (v1.5.5).
+		// Through the proxy every LAN client has a LOOPBACK peer, so the peer test alone
+		// would let a device that merely knows the password change the password, flip the
+		// switch or read diagnostics. The proxy stamps what it forwards.
+		const lanConfigure = await step(`${lanBase}/dsh-lan/configure`, {
+			method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ lanPort: 19999 })
+		});
+		check("5f a proxied configure is refused", lanConfigure.status === 403, `${String(lanConfigure.status)} ${lanConfigure.body.slice(0, 80)}`);
+		const lanDiag = await step(`${lanBase}/dsh-lan/diag`, { headers: { cookie } });
+		check("5f a proxied diag is refused", lanDiag.status === 403, String(lanDiag.status));
+		const lanStatus = JSON.parse((await step(`${lanBase}/dsh-lan/status`, { headers: { cookie } })).body);
+		check("5f a proxied page is not host-only", lanStatus.hostOnly === false, JSON.stringify({ local: lanStatus.local, hostOnly: lanStatus.hostOnly }));
+		const hostStatus = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
+		check("5f the host page is host-only", hostStatus.hostOnly === true && hostStatus.local === true, JSON.stringify({ local: hostStatus.local, hostOnly: hostStatus.hostOnly }));
+		const hostConfigure = await step(`${local}/dsh-lan/configure`, {
+			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lanPort: null })
+		});
+		check("5f the host can still configure", hostConfigure.status === 200, String(hostConfigure.status));
 		// 5d ── and it must be RELEASABLE. DSH refuses a second upgrade for a peer
 		// that already owns one (409 in `admitConnection`) and clears that only when
 		// the socket really closes; LAN clients vanish abruptly all the time (page
