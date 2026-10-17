@@ -438,6 +438,17 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the fence patches the trust funnel too', server.includes('connection.isTrusted = patchedIsTrusted') && server.includes('const patchedIsTrusted'));
   check('H the trust allowance needs a local peer and an open door', server.includes('if (local && lanDoorOpen(ctx)) return true;'));
   check('H the fence is installed for proxied traffic as well', server.includes('function lanDoorOpen(ctx)') && server.includes('return lanProxy !== null && lanProxy.listening();'));
+  // 1.5.2 — the LAN port can be pinned, and the card has to offer it.
+  check('H the proxy listens on a pinnable port', server.includes('listenPort: lanPortSetting') && server.includes('function lanPortSetting()'));
+  check('H the firewall admits the port LAN devices use', server.includes('const port = lanListenPort(ctx);'));
+  check('H configure accepts a pinned port', server.includes('Object.prototype.hasOwnProperty.call(body, "lanPort")'));
+  check('H the card offers the port box', client.includes('configure({ lanPort: value })') && (client.match(/"port\.label":/g) ?? []).length === 2);
+  // 1.5.2 — the "applying" line has to be reachable again: the toggle replies
+  // BEFORE it awaits the bind (1.5.0/1.5.1 awaited it, so `applying` was already
+  // false in the response and the green line 1.4.6 added never appeared), and the
+  // card holds it for a moment so a millisecond-fast settle is still visible.
+  check('H the toggle replies before the bind settles', server.includes('void lanProxy.refresh()') && !server.includes('const bound = await lanProxy.refresh();'));
+  check('H the pending line has a minimum visible life', client.includes('pendingUntil.current = Date.now() + 1600') && client.includes('Date.now() < pendingUntil.current'));
   // v1.5.0 — the card must not call a loopback bind "the LAN bind" now that the
   // door is the proxy, and the "applying" line must not claim a socket rebind.
   check('H the card labels the loopback listener when proxied', client.includes('data.proxied === true ? t("status.bindLocal") : t("status.bind")'));

@@ -92,6 +92,8 @@ Quit the desktop app before running the CLI (`dsh-desktop-host` says so in its m
 4. Open the `http://<host-ip>:<port>` URL shown in the card from a LAN device and enter the password.
 
 > **The port is chosen by DSH itself** (the 0.2.1 desktop launcher passes `--port 0`, so the OS picks one and it can differ on every start; plain `dsh web` defaults to `3080`). **Trust the address the card displays.**
+>
+> 📌 **Want a stable LAN address?** Type a "LAN port" (1024–65535) in the card and press "Apply port"; leave it empty to keep following DSH. **You are pinning the plugin's own entry point, not DSH's port** — DSH's cannot be pinned safely (a `webserver` override with a taken port stops the whole app from starting, whereas a taken port here only costs you LAN access while the app starts fine). Once pinned, open pages, bookmarks and QR codes survive a DSH restart. Unpinned, **every restart moves the port, so a LAN page left open keeps reconnecting to the old one** (it shows "reconnecting" while the session list still renders), and a page reload fixes it.
 
 ### Firewall notes
 
