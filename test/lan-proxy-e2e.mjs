@@ -77,6 +77,10 @@ async function prepare() {
 	const state = existsSync(liveState) ? JSON.parse(readFileSync(liveState, "utf8")) : {};
 	delete state.passwordHash;
 	delete state.salt;
+	// A pinned LAN port is a machine-local choice, and the live app is very likely
+	// holding exactly that port — inheriting it makes this fixture fail to bind
+	// (EADDRINUSE) while the real instance is running. Follow DSH instead.
+	delete state.lanPort;
 	state.lanEnabled = true;
 	writeFileSync(join(home, "dsh-lan.json"), JSON.stringify(state));
 	// The plugin under test: a junction straight to the working tree.
@@ -561,6 +565,20 @@ boot(env, async (local, readyUrl, stop) => {
 			"5 the event stream can reconnect after an abrupt client loss",
 			first.status.startsWith("HTTP/1.1 101") && second.status.startsWith("HTTP/1.1 101"),
 			`first="${first.status}" second="${second.status}"`
+		);
+		// 5e ── the host-only diagnostic has to actually record those decisions.
+		// "The page opens but the conversation never connects" is invisible from the
+		// outside, so this log is the only way to tell a missing upgrade, a
+		// credential-less upgrade and an upstream refusal apart.
+		const diag = await step(`${local}/dsh-lan/diag`);
+		const diagBody = JSON.parse(diag.body);
+		const upgradeEvents = Array.isArray(diagBody.events) ? diagBody.events.filter((e) => String(e.kind).startsWith("upgrade")) : [];
+		check(
+			"5 the diagnostic records upgrade decisions",
+			diag.status === 200 && diagBody.ok === true
+				&& upgradeEvents.some((e) => e.kind === "upgrade-open")
+				&& upgradeEvents.some((e) => e.kind === "upgrade-upstream" && String(e.status).includes("101")),
+			`${String(diag.status)} events=${String(upgradeEvents.length)} ${JSON.stringify(upgradeEvents.slice(-3)).slice(0, 200)}`
 		);
 		const rpcInit = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: 1, method: "noop" }) };
 		const lanRpc = await step(`${lanBase}/api/connection`, { ...rpcInit, headers: { ...rpcInit.headers, cookie } });
