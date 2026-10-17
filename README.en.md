@@ -95,6 +95,16 @@ Quit the desktop app before running the CLI (`dsh-desktop-host` says so in its m
 >
 > 📌 **Want a stable LAN address?** Type a "LAN port" (1024–65535) in the card and press "Apply port"; leave it empty to keep following DSH. **You are pinning the plugin's own entry point, not DSH's port** — DSH's cannot be pinned safely (a `webserver` override with a taken port stops the whole app from starting, whereas a taken port here only costs you LAN access while the app starts fine). Once pinned, open pages, bookmarks and QR codes survive a DSH restart. Unpinned, **every restart moves the port, so a LAN page left open keeps reconnecting to the old one** (it shows "reconnecting" while the session list still renders), and a page reload fixes it.
 
+> ⚠️ **No card in Settings after a reinstall or upgrade?** The profile patch probably still carries a stale disable row — `dsh-plugin-manager` writes it when a plugin is disabled or removed, and **reinstalling does not clear it**; the patch layer outranks the bundle layer, so it overrides the freshly installed package:
+>
+> ```yaml
+> # %USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml (at the end)
+> - id: dsh-lan-tool
+>   disabled: true
+> ```
+>
+> Delete those two lines and save — DSH hot-reloads, and **a page refresh** brings the card back. (The same failure shows up as: no card in Settings, `http://127.0.0.1:<port>/dsh-lan/status` answering 404, and unreachable LAN URLs.)
+
 ### Firewall notes
 
 - **Windows**: a Windows Defender Firewall allow rule named `dsh-lan-tool (auto)` (Domain + Private) is maintained automatically. **Without an elevated shell the first enable triggers the OS "allow access" prompt once** — click Allow and Windows creates its own rule; the card picks that system rule up **automatically** (within seconds it reports "firewall open" with the rule's name) — no admin rights and no restart needed. "firewall blocked (needs admin)" is only reported when neither our rule nor any OS rule admits the port.
