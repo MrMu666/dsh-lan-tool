@@ -68,8 +68,10 @@ const OFFICIAL_AUTHORIZE = 'official-authorize';
 
 function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
   const routes = new Map();
-  const calls = { rejection: 0, authorize: 0 };
+  const calls = { rejection: 0, authorize: 0, fetchPeers: [] };
+  const browserPeer = { id: 'browser-peer', principal: { kind: 'owner' } };
   const connection = {
+    browserPeer,
     requestRejection() {
       calls.rejection += 1;
       return OFFICIAL_REJECTION;
@@ -79,6 +81,20 @@ function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
         calls.authorize += 1;
         return OFFICIAL_AUTHORIZE;
       },
+    },
+    // The /lanapi re-entry dispatches through the shared `/api` channel, whose
+    // `fetch(request, peer)` reads `peer.signal` / `peer.principal`. Omitting the
+    // peer made every privileged call routed there fail (v1.5.7).
+    createSharedFetchHandler(channel) {
+      return {
+        async fetch(request, peer) {
+          calls.fetchPeers.push({ channel, peer, url: request.url });
+          return new Response(JSON.stringify({ ok: true, via: 'shared-fetch' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      };
     },
   };
   const webServer = {
@@ -105,7 +121,7 @@ function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
     },
   };
   const dispose = plugin.apply(ctx, {});
-  return { ctx, connection, routes, calls, dispose };
+  return { ctx, connection, browserPeer, routes, calls, dispose };
 }
 
 function makeReq({ peer, host, method = 'GET', url = '/', headers = {}, body = null }) {
@@ -364,6 +380,33 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const denied = makeRes();
   await proxy.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', method: 'POST', url: '/lanapi/x', body: {} }), denied);
   check('G /lanapi refuses a LAN device without a key', denied.statusCode === 403, `status=${denied.statusCode}`);
+
+  // v1.5.7 — the re-entry must hand the shared `/api` channel a real PEER. Its
+  // dispatch reads `peer.signal`, so `fetch(request)` alone failed every
+  // privileged call with `gateway/internal: Cannot read properties of undefined
+  // (reading 'signal')` — a settings page that rendered as an error, which is
+  // what a platform without host-only surfaces showed first.
+  const reentry = makeRes();
+  await proxy.handler(
+    makeReq({
+      peer: '127.0.0.1',
+      host: '127.0.0.1:19387',
+      method: 'POST',
+      url: '/lanapi/pluginInventory/list',
+      headers: { 'content-type': 'application/json' },
+      body: { type: 'client-request', rpcId: 'r1', method: 'pluginInventory/list', payload: { args: {} } },
+    }),
+    reentry,
+  );
+  // The prefix route deliberately does not await the re-entry; wait for it.
+  for (let i = 0; i < 200 && reentry.statusCode === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  check('G /lanapi re-enters the shared /api channel', reentry.statusCode === 200 && reentry.body.includes('shared-fetch'), `status=${reentry.statusCode} body=${reentry.body.slice(0, 80)}`);
+  check(
+    'G /lanapi passes the browser peer (without it every privileged call fails)',
+    h.calls.fetchPeers.length === 1 && h.calls.fetchPeers[0].peer === h.browserPeer && h.calls.fetchPeers[0].channel === '/api',
+    JSON.stringify(h.calls.fetchPeers.map((entry) => ({ channel: entry.channel, peer: entry.peer?.id }))),
+  );
+  check('G /lanapi rewrites the prefix back to /api', String(h.calls.fetchPeers[0]?.url ?? '').endsWith('/api/pluginInventory/list'), String(h.calls.fetchPeers[0]?.url));
 }
 
 // ── H. client half: static shape of the gate decisions ─────────────────────
@@ -478,6 +521,30 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the card labels the loopback listener when proxied', client.includes('data.proxied === true ? t("status.bindLocal") : t("status.bind")'));
   check('H the proxy explanation is localized', (client.match(/"status\.proxy":/g) ?? []).length === 2);
   check('H the applying line no longer claims a socket rebind', !client.includes('正在重新绑定监听') && !client.includes('re-binding the listening socket'));
+  // 1.5.7 — a fresh toggle must never read as "blocked": the rule is created
+  // BEFORE the response describes it, an unproven verdict is re-checked within
+  // seconds, and the card paints "checking" in the progress colour.
+  check(
+    'H the toggle creates the firewall rule before answering',
+    server.indexOf('ensureFirewallRule(firewallPort)') !== -1
+      && server.indexOf('ensureFirewallRule(firewallPort)') < server.lastIndexOf('sendJson(res, 200, await buildStatus(ctx, config, req))'),
+    `rule@${server.indexOf('ensureFirewallRule(firewallPort)')} reply@${server.lastIndexOf('sendJson(res, 200, await buildStatus(ctx, config, req))')}`,
+  );
+  check('H an unproven firewall verdict is reported as checking', server.includes('const firewallChecking = enabled && firewall.ok !== true') && server.includes('firewallChecking,'));
+  check('H a refusal is re-checked within seconds, not ten of them', server.includes('const FIREWALL_RECHECK_MIN_MS = 2 * 1000;'));
+  check('H the settle window exists for the first seconds of a toggle', server.includes('const FIREWALL_SETTLE_MS = 15 * 1000;'));
+  check('H a cold status query never waits long for the OS', server.includes('const FIREWALL_STATUS_WAIT_MS = 1200;') && server.includes('Promise.race(['));
+  check('H the card renders "checking" with the progress class', client.includes('data.firewallChecking === true') && client.includes('className: c.pending, children: t("firewall.checking")'));
+  check('H the checking line is not rendered as a failure', !/firewallChecking[\s\S]{0,400}className: c\.err/.test(client));
+  check('H both locales carry the checking line', (client.match(/"firewall\.checking":/g) ?? []).length === 2);
+  // 1.5.7 — the desktop shell is not an HTTP origin (`dsh-app://app/`): its
+  // `__DSH_TRANSPORT__.ownsHost` is the shell's own statement that this page IS
+  // the Host, so the host-only surfaces must never wait for a round trip.
+  check('H the client recognises the shell-owned Host', client.includes('globalThis.__DSH_TRANSPORT__?.ownsHost === true') && client.includes('function shellOwnsHost()'));
+  check('H the shell-owned page is local immediately', client.includes('let localClient = isLoopbackHostname() || shellOwnsHost() ? true : null;'));
+  check('H local-ness always honours the shell-owned Host', client.includes('return localClient === true || shellOwnsHost() || (localClient === null && isLoopbackHostname());'));
+  // 1.5.7 — the /lanapi re-entry must pass the peer the shared channel needs.
+  check('H the /lanapi re-entry passes a peer', server.includes('const peer = connection.browserPeer;') && server.includes('.fetch(request, peer)'));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
@@ -535,6 +602,28 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 
   const offlineLoopback = scope('127.0.0.1', boom);
   check('I status unreachable never gates a loopback page', (await offlineLoopback.detectLocalClient()) === true);
+
+  // v1.5.7 — the desktop shell loads `dsh-app://app/` (hostname "app") and forwards
+  // every call to the Host it owns. `ownsHost` is that ownership statement: the page
+  // is the host machine, so it must be local from the first millisecond — no probe,
+  // no gate, no remote posture, no privileged-call reroute.
+  let shellScope;
+  try {
+    globalThis.__DSH_TRANSPORT__ = { ownsHost: true };
+    shellScope = scope('app', boom);
+    check('I a shell-owned Host page is local without asking the server', shellScope.clientIsLocal() === true);
+    check('I a shell-owned Host page never gates', shellScope.shouldGate() === false);
+    check('I a shell-owned Host page resolves local even with the probe offline', (await shellScope.detectLocalClient()) === true);
+    check('I the shell hint is not a hostname guess', shellScope.isLoopbackHostname() === false && shellScope.clientIsLocal() === true);
+  } finally {
+    delete globalThis.__DSH_TRANSPORT__;
+  }
+  // …and it is not a blanket "everything is local": a page the shell does NOT own
+  // (a plain browser at a LAN address) keeps the old, evidence-based decision.
+  const lanAfterShell = scope('192.168.1.50', statusOk({ local: false }));
+  check('I a non-shell LAN page still gates', (await lanAfterShell.detectLocalClient()) === false && lanAfterShell.shouldGate() === true);
+  const appWithoutShell = scope('app', statusOk({ local: false }));
+  check('I an app-origin page without ownsHost is decided by the server', (await appWithoutShell.detectLocalClient()) === false);
 }
 
 // ── J. node half: version + request-host diagnosis in the status payload ───
@@ -572,6 +661,43 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const body = json(res);
   check('K admitted LAN traffic → open (observed)', body.firewallOk === true && body.firewallSource === 'observed', `${body.firewallOk}/${body.firewallSource}`);
   stub.netshRuleExists = true;
+}
+
+// ── K2. toggling ON: "not verified yet" is not "blocked" ───────────────────
+// Reported: "切换开关后，防火墙状态要过几秒才刷新，刚切换完显示的是未放行". The
+// verdict was cached as a refusal and re-checked 10s later; the card painted a
+// failure in a window where the truth was simply unknown.
+{
+  const stub = childProcessStub.stubState;
+  stub.netshRuleExists = false;
+  stub.powershellJson = '';
+  const stateFile = join(HOME, 'dsh-lan.json');
+  writeFileSync(stateFile, JSON.stringify({ lanEnabled: false }));
+  const h = makeHarness({ bindHost: '0.0.0.0' });
+  const res = makeRes();
+  await h.routes.get('exact /dsh-lan/configure').handler(
+    makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/dsh-lan/configure', body: { enabled: true } }),
+    res,
+  );
+  const body = json(res);
+  check('K2 a fresh toggle reports the firewall verdict as still checking', body.firewallChecking === true, JSON.stringify({ ok: body.firewallOk, checking: body.firewallChecking, source: body.firewallSource }));
+  check('K2 …while firewallOk stays truthful (not claimed open)', body.firewallOk === false, String(body.firewallOk));
+  check('K2 …and the toggle itself is reported as desired', body.desiredEnabled === true, String(body.desiredEnabled));
+
+  // Our own rule existing is the fast path: the response is a real verdict at
+  // once, never a "checking" placeholder.
+  stub.netshRuleExists = true;
+  const h2 = makeHarness({ bindHost: '0.0.0.0' });
+  const res2 = makeRes();
+  await h2.routes.get('exact /dsh-lan/configure').handler(
+    makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/dsh-lan/configure', body: { enabled: true } }),
+    res2,
+  );
+  const body2 = json(res2);
+  check('K2 an existing rule answers immediately (no checking placeholder)', body2.firewallOk === true && body2.firewallChecking === false, JSON.stringify({ ok: body2.firewallOk, checking: body2.firewallChecking }));
+  writeFileSync(stateFile, JSON.stringify({ lanEnabled: false }));
+  h2.dispose();
+  h.dispose();
 }
 
 // ── L. mobile keyboard: real client code on a stubbed DOM ──────────────────

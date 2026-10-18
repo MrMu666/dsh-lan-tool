@@ -158,6 +158,8 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - **"谁是本机"由 TCP 对端决定，绝不由 Host 头决定**（1.4.1 的教训，改这块前先读）：`isLocalRequest(req)` = 对端地址 ∈ {`127.0.0.1`, `::1`} ∪ `localHostAddresses()`（`os.networkInterfaces()` 里本机全部地址，含 IPv6 与 `%zone`，10 秒 TTL 缓存）。**不能用 Host 白名单**：桌面端可能用 `[::1]`（浏览器把 IPv6 字面量报成**带方括号**的形式）、机器名、本机局域网地址，或经 webview/协议改写过的 host 访问自己的 GUI —— 任何白名单都会把主机自己挡在门外。1.4.0 就是这么锁死桌面端的：服务端按 Host 把头判成"非本机"→ 302 到落地页；客户端又按 `location.hostname` 猜（`[::1]` 不在它的名单里）→ 挂上全屏口令层，且因为没设口令把输入框禁用了，主机彻底进不去。**残留取舍**：本机浏览器经 DNS rebinding 域名访问时也算"本机"（与 DSH 官方 `isTrustedApiRequest` 对 loopback 的信任一致）；局域网设备不受影响（对端地址由 TCP 保证，伪造 `Host: 127.0.0.1` 无效）。
 - `buildStatus().local` 是**客户端唯一该用的"我是不是主机"**；`loopback` 退化为"页面是不是用回环域名打开的"，只作展示。主机专属细节（`patchFile` / `profile` / `lanUrls` / 防火墙状态 / `platform` / `enforcement`）只发给 `local === true`。
 - 客户端侧**不许再用 hostname 猜**：`lib/client.js` 的 `detectLocalClient()` 去问服务端（`/dsh-lan/status` 的 `local`），hostname 只用来初始化"已知本机"。**挂 gate 必须有证据**：只有服务端明确回答 `local === false`（`shouldGate()`）才允许盖住界面；"还没回答 / 探测失败 / 旧服务端没有这个字段"一律视为未知→**不挂**（1.4.1 的教训：拿不准时按 hostname 猜，主机就被自己的 gate 永久盖住）。安全边界始终在服务端，gate 只是体验层。服务端说"是本机"时还会 `removeGate()` 自愈；本机半边旧于 1.4.1 只报 Host 版 `loopback: true` 时也当作本机（桥接）。历史包袱：客户端那个 `isLoopback()` 已删除（IPv6 回环带方括号是它的头号坑），别再加回来。
+- **桌面端不是 HTTP 页面**（v1.5.7 的事实，客户端半边必须读）：桌面壳把 SPA 从 **`dsh-app://app/`** 加载（`lib/main.js` 的 `applicationUrl`），再把每个请求带着自己的 host cookie 转到 `http://127.0.0.1:<port>`；页面在注入脚本**之前**已被 `dsh-web-frontend` 的 desktop boot 设上 `globalThis.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl }`。因此 `location.hostname === "app"`、`isLoopbackHostname()` 为 false，**唯一正确的"我是主机"信号是 `ownsHost`**。`clientIsLocal()` 必须把它当 local（`shellOwnsHost()`），否则桌面端会先按远程处理，并且**只要 `/dsh-lan/status` 探测失败一次就永久停在"非本机"**（`localClient` 保持 null），于是 `settings.*` 等 privileged 调用被改写到 `/lanapi`。
+- **`/lanapi` 重入必须传 peer**（v1.5.7）：`connection.createSharedFetchHandler("/api").fetch(request)` 少一个参数时，通道分发读 `peer.signal` 直接抛 `gateway/internal: Cannot read properties of undefined (reading 'signal')` —— 表现为"设置页里所有依赖远端命名空间的东西都报不可用"（内置插件页就是一句 `插件暂时不可用。`）。正确写法是 `.fetch(request, connection.browserPeer)`。
 - **版本握手**：`/dsh-lan/status` 报 `version`，客户端请求带 `x-dsh-lan-client`；不一致说明"装了没重启"（node 半边没换代码），客户端在设置卡片与控制台写明、服务端 log 一行。
 - 口令门拒绝时会打一行去重日志 `password gate: … — peer=… is not an address of this machine (host=…)`：万一主机又被挡住，这行日志直接指出被判成"非本机"的 peer/host（1.4.0 时这种事故在日志里是完全静默的）。
 - **唯一闸门**是 `connection.requestRejection(request)`（`@deepseek-ai/dsh-client-connection/lib/index.js`：Host/Origin 围栏 + 浏览器会话），`admit()` 调它，RPC 路由与 fetch/WS 处理器都走 `admit` ⇒ 直接替换实例方法即可覆盖全部入口。
@@ -172,8 +174,9 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 - **本插件建的规则只是三个来源之一**，`/dsh-lan/status` 报的应是"OS 到底放行没有"：`firewallSource = plugin`（我们建的 `dsh-lan-tool (auto)`）、`system`（**Windows 自己的「是否允许访问」弹窗建的规则**——程序级、`LocalPort=Any`，按名字查我们的规则是查不到它的）、`observed`（**已经有非本机设备成功连进来过**，最便宜也最硬的证据：`noteRequestHost` 里 `local !== true` 时记 `remotePeerSeenAt`）、`none`（没有受支持的防火墙工具）。
 - **必须同时匹配程序**：Windows 上 `LocalPort=Any` 的入站允许规则里混着大量**别的程序**的规则（作者机实测 130 条允许规则，随手一个 `Any` 命中是 Wi-Fi Direct）。只按端口判会把"别的程序被放行"误读成"本端口已放行"。
-- **一次完整枚举约 4 秒**（`Get-NetFirewallRule` + 逐条 `Get-NetFirewallPortFilter`；`Get-NetFirewallPortFilter` 全量枚举还需要管理员权限，实测"拒绝访问"）。所以：OS 查询**只在后台跑**，`/dsh-lan/status` 走 stale-while-revalidate（先返回上次结论，过期就丢一个后台刷新，永不阻塞请求）；判定不是"我们自己的规则且 ok"时按 **10s→20s→40s→60s 封顶**退避重查——用户点完系统弹窗的「允许」后，卡片几秒到几十秒内自己变绿，无需重启、无需管理员权限；稳定的 `plugin` 判定缓存 10 分钟。`configure` 开关切换时会清空缓存并重置退避。
-- 判定失败/超时一律**不报"已放行"**（保持"未放行"），失败方向与门禁一致：宁可显示保守。
+- **一次完整枚举约 4 秒**（`Get-NetFirewallRule` + 逐条 `Get-NetFirewallPortFilter`；`Get-NetFirewallPortFilter` 全量枚举还需要管理员权限，实测"拒绝访问"）。所以：OS 查询**只在后台跑**，`/dsh-lan/status` 走 stale-while-revalidate（先返回上次结论，过期就丢一个后台刷新）；**冷缓存最多等 `FIREWALL_STATUS_WAIT_MS`（1200ms）**，超时直接答 `checking: true` 并在后台继续。判定不是"我们自己的规则且 ok"时按 **2s→4s→…→60s 封顶**退避重查（1.5.7 之前是 10s 起步，用户点完系统弹窗的「允许」后卡片要十几秒才变绿）；稳定的 `plugin` 判定缓存 10 分钟。`configure` 开关切换时会清空缓存并重置退避，且在回复前就 `ensureFirewallRule()`（v1.5.7）——否则那份"新鲜"探测必然先看到"没规则"。
+- **`firewallChecking` 不是"未放行"（v1.5.7）**：开关打开后的头 `FIREWALL_SETTLE_MS`（15s）内，负判定只代表"还没验证完"，`buildStatus` 置 `firewallChecking: true`，卡片用绿色 `firewall.checking` 行展示，**不要**把它渲染成 `firewall.bad`——这正是用户报的"刚切换完显示未放行"。
+- 判定失败/超时一律**不报"已放行"**（`firewallOk` 保持 false），失败方向与门禁一致：宁可显示保守；但"不知道"用 `firewallChecking` 表达，别混进"未放行"。
 - **编码（1.4.4 实机乱码事故）**：Windows PowerShell 的 stdout 走**控制台代码页**（中文系统是 GBK），所以脚本第一行必须 `[Console]::OutputEncoding=[Text.Encoding]::UTF8`；否则中文规则名会被当 UTF-8 解码成乱码——用户报的 `(������ѧУ�˻�)` 就是这个。实测对照：不加那行得到 `Զ��Э������վ��`，加了得到 `远程协助（入站）`。规则名进卡片前还要过 `sanitizeFirewallNote()`（去 U+FFFD 与控制字符、超 60 字符截断、空则回退 `Windows rule`），这样即使将来又出现编码问题，显示的也是最坏情况下的中性文案而不是乱码。
 
 ---
@@ -312,6 +315,22 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.5.7 — 切换开关不再先显示"未放行"；桌面端永远按"主机"处理；`/lanapi` 补上 peer
+
+两个用户报的问题，根因分别是"未验证被当成失败"和"桌面页不是 HTTP origin"：
+
+- **①切换开关后几秒内显示"防火墙未放行"**：`configure` 以前先清缓存、再回 `buildStatus`，而**创建防火墙规则**的 `ensureFirewallRule()` 在 `lanProxy.refresh().then(syncEnforcement)` 里、也就是**回复之后**才跑 ⇒ 那份"新鲜"探测必然先看到"没规则"；负判定又按 `10s→60s` 退避缓存，卡片要等十几秒才变绿。四项改动：
+  1. `configure` 在回复前就 `ensureFirewallRule(防火墙端口)`（`netsh` 同步、亚秒级）；规则能建时探测直接命中 `plugin`，响应就是绿的。
+  2. `FIREWALL_RECHECK_MIN_MS` 10s → **2s**（仍是 2/4/8/16/32/60 倍增）。
+  3. 新增 `FIREWALL_SETTLE_MS = 15s` 与 status 字段 **`firewallChecking`**：开着的头 15 秒（或探测明确回答"还没问完"）里，负判定只是"未知"，卡片渲染**绿色** `firewall.checking`（`c.pending`），不再打印"未放行"。
+  4. `firewallSummary` 冷路径最多等 `FIREWALL_STATUS_WAIT_MS = 1200ms`，超时就返回 `checking: true` 并在后台继续；`/dsh-lan/status` 不再被 PowerShell（实测数秒）拖住 —— 这也顺带缩短了下面②的窗口。
+- **②开启局域网后，本机桌面端"敏感设置不可用"（设置里"内置插件"显示红字"插件暂时不可用。"）**：`lib/index.js` 的 `/lanapi` 重入调用 `createSharedFetchHandler("/api").fetch(request)` **少传了 peer**，而该通道的分发要读 `peer.signal` / `peer.principal` ⇒ 每一条经 `/lanapi` 的 RPC 都变成 `gateway/internal: Cannot read properties of undefined (reading 'signal')`。
+  - **谁会被这条路打到**：`clientIsLocal()` 为 false 时，`installLanFetchReroute`/`wrapApi` 把 `settings.*`、`credentials.*` 等 privileged 方法改写到 `/lanapi`。
+  - **桌面端为什么也会 false**：桌面窗口不是 HTTP 页面，它从 **`dsh-app://app/`** 加载（`main.js` 的 `applicationUrl`），`location.hostname` 是 `"app"` ⇒ `isLoopbackHostname()` 为 false ⇒ `localClient` 初始为 **null**，而 `clientIsLocal()` 只认 `localClient === true` 或回环 hostname。桌面壳在注入脚本前已经设了 `globalThis.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl }`（`dsh-web-frontend` 的 desktop boot），**这才是"这个页面就是主机"的权威声明**，旧代码没读它 ⇒ 启动早期（以及探测失败时一直）按"远程"处理。现在 `shellOwnsHost()` 参与 `localClient` 初值与 `clientIsLocal()`，桌面端**从第一毫秒起就是主机**：不挂 gate、不打 `dsh-lan-nonlocal`、不把 privileged 调用改写到 `/lanapi`。
+  - `/lanapi` 现在传入 `connection.browserPeer`（能走到这里的请求已经过 `isLocalRequest || hasLanCredential`，与 `admit()` 给浏览器会话的 principal 一致）；没有 `browserPeer` 时才退回旧调用。
+- **踩过的坑**：`ctx.remote.pluginInventory.list()` 失败时，设置里"内置插件"只显示一句"插件暂时不可用。"，真正的错误在 `result.error.message` 里 —— 直接向活着的 Host `POST /lanapi/<method>`（循环对端即可）就能读到它，这是定位这条 bug 的最快路径。
+- **验证**：`npm test` **275 项全绿**（250 → 275；新增：`firewallChecking` 的两种结局、规则先于回复创建、2s 退避、1200ms 冷等待、卡片绿色 `checking`、`ownsHost` 真源跑真实客户端切片、`/lanapi` 必须带 peer 与 `/api` 前缀改写）。真机（隔离 harness + 真 Host）：`/lanapi/pluginInventory/list`、`/lanapi/settings/describe` 从 `gateway/internal` 变为 `ok:true`；开开关的响应 520ms 且 `{ok:false, checking:true}`。
 
 ### 1.4.7 — 移动端小鲸鱼嵌入顶栏：靠左、标题居中，与右侧边栏按钮同尺寸
 
