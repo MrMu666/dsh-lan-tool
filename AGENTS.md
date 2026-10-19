@@ -107,7 +107,9 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 | `slots` | `@deepseek-ai/dsh-client-ui-renderer` 的 SlotRegistry | 插槽注册/查询/订阅 |
 | `connection` | `@deepseek-ai/dsh-client-connection` | `connection.api.postJson(...)`、`connection/reset` 事件 |
 
-官方 `dsh-client-ui-directory-picker-browse` 注入的就是 `uiWorkspace`。**任何目录枚举/新建目录调用都必须走 `uiWorkspace`**，`workspaces` 只能作为旧版回退（`pickerBrowse()` 就是按这个顺序取的）。
+官方 `dsh-client-ui-directory-picker-browse` 注入的就是 `uiWorkspace`。**目录枚举/新建目录调用必须走 `uiWorkspace`**，`workspaces` 只能作为旧版回退（`pickerBrowse()` 就是按这个顺序取的）。
+
+**v1.5.8 的唯一例外（先读这条再改选择器）**：DSH 0.2.1 起 Host 必须绑回环，`dsh-host-directory-picker-auto` 因此**只组合 `native`**（`bindHost` 是回环 + win32/darwin ⇒ native；只有 `allowsRemoteAuthorities` 才 browse）。也就是说 `directoryPicker/list` 这条远端方法**根本不存在**，`uiWorkspace.listDirectory()` 永远答 `directory-picker/unavailable`——插件影子出来的 `directoryFlow` 对话框如果还调它，"新建工作区"就会报"无法打开文件夹 … directory browse failed"。所以对话框的**第一数据源是本插件自己的 `/dsh-lan/fs/list` 与 `/dsh-lan/fs/mkdir`**（node 半边用 `opendir`/`mkdirSync` 实现，返回与官方 `DirectoryListing` 相同的形状），拿不到（404 = 旧 node 半边）才回退 `uiWorkspace`。这两个路由和别的 LAN 端点同一道门：`lanFileAccess()` = 主机自己 / 口令持有者 / mint 出来的浏览器会话——代理对 `/dsh-lan/*` 是无条件放行的（落地页要用），所以门必须做在路由里。
 
 ### 3.3 插槽（slot）机制要点
 
@@ -315,6 +317,15 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.5.8 — "新建工作区"不再报"无法打开文件夹"：影子选择器改用自己的文件系统原语
+
+- **现象**（用户实机，1.5.7）：点「添加工作区 / 新建工作区」→ 红字 `无法打开文件夹： directory browse failed: … directoryPicker/list failed: transport failure for /api/directoryPicker/list: HTTP 400`。
+- **根因**：插件从 v71 起用 `priority:-1000` 影子覆盖官方两个 `directoryFlow` 洞，而影子的数据源是 `uiWorkspace.listDirectory()`。**DSH 0.2.1 起 Host 必须绑回环**（见 §3.5），`dsh-host-directory-picker-auto` 于是永远组合 **`native`**（`bindHost` 回环 + win32/darwin ⇒ native；只有 `allowsRemoteAuthorities` 才 browse）⇒ `directoryPicker/list` 这条远端方法**根本不存在**。1.5.0 之后（绑定方式从 `0.0.0.0` 改成回环）这个洞就出现了，只是直到 1.5.7 才有人点到。
+  - 隔离复现（真 Host + 无头 Chrome，点「添加工作区」）：请求体 `{"type":"client-request",…,"method":"directoryPicker/list","payload":{"args":{}}}` 得到 **200** + `directory-picker/unavailable: … the composed picker serves "native"`；用户桌面端看到的是 400（桌面壳把 `dsh-app://` 的 POST 转发到 Host 的另一条链路），两者指向同一个"这条路本来就不该走"。
+- **修复**：对话框的第一数据源改为**本插件自己的原语**——node 半边新增 `GET /dsh-lan/fs/list?path=…` 与 `POST /dsh-lan/fs/mkdir`（`opendir`/`stat`/`mkdirSync`），返回与官方 `DirectoryListing` **完全同形**的 `{path, home, crumbs:[{name,path}], entries:[{name,path,hidden}], truncated}`（含符号链接判定、1000 条截断、`EEXIST`→`directory-exists`）。客户端 `lanFsCall()` 先打自己的路由，**404（旧 node 半边）才回退 `uiWorkspace`**——半边可以各自升级，不会互相打死。
+- **门（必须记住）**：代理对 `/dsh-lan/*` 是**无条件放行**的（落地页要用），所以门做在路由里：`lanFileAccess()` = 主机自己（`isHostOnlyRequest`，即本地且未被反代盖章）**或**口令持有者（`x-dsh-lan-key` 头/`dsh-lan-key` cookie）**或** mint 出来的浏览器会话（`browserAuth.isAuthenticated`）。对没有凭据的局域网设备必须 403。
+- **验证**：`npm test` **293 项全绿**（275 → 293；K3 段锁住 listing 形状/只列文件夹/面包屑/无参列 home/单段 mkdir/EEXIST/多段名拒绝/相对路径拒绝/无凭据 403/口令持有者 200，H 段锁住两条路由与"先自己、404 回退"）。真机（隔离 harness + 真 Host + 无头 Chrome）：点「添加工作区」后 `err` 为空、`crumbs=["C:\\","Users","主目录"]`、列出 home 下 12 个目录、盘符下拉识别出 C:/D:/E:/F:，且**不再有任何** `/api/directoryPicker` 流量。
 
 ### 1.5.7 — 切换开关不再先显示"未放行"；桌面端永远按"主机"处理；`/lanapi` 补上 peer
 

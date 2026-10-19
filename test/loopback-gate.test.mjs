@@ -14,7 +14,7 @@
 // Run: node test/loopback-gate.test.mjs   (no dependencies; ~1s)
 import { registerHooks } from 'node:module';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
-import { networkInterfaces, tmpdir } from 'node:os';
+import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-lan-test-'));
@@ -545,6 +545,15 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H local-ness always honours the shell-owned Host', client.includes('return localClient === true || shellOwnsHost() || (localClient === null && isLoopbackHostname());'));
   // 1.5.7 — the /lanapi re-entry must pass the peer the shared channel needs.
   check('H the /lanapi re-entry passes a peer', server.includes('const peer = connection.browserPeer;') && server.includes('.fetch(request, peer)'));
+  // 1.5.8 — the shadow folder dialog lists through this plugin's own routes:
+  // with the loopback bind DSH requires, the composed picker is NATIVE and
+  // `directoryPicker/list` does not exist at all.
+  check('H the dialog has its own listing routes', server.includes('path: "/dsh-lan/fs/list"') && server.includes('path: "/dsh-lan/fs/mkdir"'));
+  check('H the filesystem routes sit behind the LAN door', (server.match(/if \(!lanFileAccess\(ctx, req\)\)/g) ?? []).length === 2);
+  check('H the door accepts host / password / browser session', server.includes('function lanFileAccess(ctx, req)') && server.includes('if (isHostOnlyRequest(req)) return true;') && server.includes('auth.isAuthenticated(req, false) === true'));
+  check('H listing keeps the official listing shape', server.includes('ancestryCrumbs(target)') && server.includes('hidden: dirent.name.startsWith(".")'));
+  check('H the client calls the plugin routes first', client.includes('lanFsCall("/dsh-lan/fs/list" + query') && client.includes('lanFsCall("/dsh-lan/fs/mkdir"'));
+  check('H an older node half still works through the official service', client.includes('!contentType.includes("application/json")') && client.includes('return browse.listDirectory(path, signal);'));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
@@ -698,6 +707,64 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   writeFileSync(stateFile, JSON.stringify({ lanEnabled: false }));
   h2.dispose();
   h.dispose();
+}
+
+// ── K3. the shadow folder dialog's own filesystem primitives (v1.5.8) ──────
+// Reported: "新建工作区" failed with "无法打开文件夹：… directory browse failed:
+// … directoryPicker/list … HTTP 400". Since DSH 0.2.1 requires the Host to bind
+// loopback, `directory-picker-auto` composes the NATIVE picker, so
+// `uiWorkspace.listDirectory()` has no backend at all. The dialog therefore
+// lists through this plugin's own routes; these assertions pin the shape and
+// the door in front of them.
+{
+  const h = makeHarness({ bindHost: '127.0.0.1' });
+  const list = h.routes.get('exact /dsh-lan/fs/list');
+  const mkdir = h.routes.get('exact /dsh-lan/fs/mkdir');
+  check('K3 both filesystem routes are registered', list !== undefined && mkdir !== undefined);
+  const sandbox = mkdtempSync(join(tmpdir(), 'dsh-lan-fs-'));
+  mkdirSync(join(sandbox, 'alpha'), { recursive: true });
+  writeFileSync(join(sandbox, 'note.txt'), 'not a folder');
+
+  const okList = makeRes();
+  await list.handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/dsh-lan/fs/list?path=' + encodeURIComponent(sandbox) }), okList);
+  const listing = json(okList).value;
+  check('K3 list answers the official DirectoryListing shape', okList.statusCode === 200 && listing.path === sandbox && typeof listing.home === 'string' && Array.isArray(listing.crumbs) && Array.isArray(listing.entries), okList.body.slice(0, 160));
+  check('K3 list shows child folders only', listing.entries.some((e) => e.name === 'alpha') && !listing.entries.some((e) => e.name === 'note.txt'), JSON.stringify(listing.entries));
+  check('K3 list rows carry name/path/hidden', listing.entries.every((e) => typeof e.name === 'string' && typeof e.path === 'string' && typeof e.hidden === 'boolean'));
+  check('K3 crumbs run root → target', listing.crumbs[0].path === listing.crumbs[0].name && listing.crumbs[listing.crumbs.length - 1].path === sandbox, JSON.stringify(listing.crumbs.map((c) => c.path)));
+
+  // No path = the host account's home directory (what the dialog asks for first).
+  const homeList = makeRes();
+  await list.handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/dsh-lan/fs/list' }), homeList);
+  check('K3 a pathless list starts at home', json(homeList).value?.path === homedir(), JSON.stringify(json(homeList).value?.path));
+
+  const made = makeRes();
+  await mkdir.handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/dsh-lan/fs/mkdir', body: { path: sandbox, name: 'beta' } }), made);
+  check('K3 mkdir creates one child folder', json(made).ok === true && existsSync(join(sandbox, 'beta')), made.body.slice(0, 140));
+
+  const again = makeRes();
+  await mkdir.handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/dsh-lan/fs/mkdir', body: { path: sandbox, name: 'beta' } }), again);
+  check('K3 an existing folder is reported, not crashed into', json(again).ok === false && json(again).error.code === 'directory-exists', again.body.slice(0, 140));
+
+  const nested = makeRes();
+  await mkdir.handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/dsh-lan/fs/mkdir', body: { path: sandbox, name: 'a/b' } }), nested);
+  check('K3 mkdir refuses a multi-segment name', json(nested).ok === false && json(nested).error.code === 'directory-create-failed', nested.body.slice(0, 120));
+
+  const relative = makeRes();
+  await list.handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/dsh-lan/fs/list?path=relative' }), relative);
+  check('K3 a relative path is refused', json(relative).ok === false && json(relative).error.code === 'directory-unreadable', relative.body.slice(0, 120));
+
+  // The door: the proxy lets /dsh-lan/* through for the landing page, so the
+  // routes themselves must refuse a device that holds no credential.
+  const stranger = makeRes();
+  await list.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', url: '/dsh-lan/fs/list?path=' + encodeURIComponent(sandbox) }), stranger);
+  check('K3 a LAN device without a credential is refused', stranger.statusCode === 403, `status=${stranger.statusCode}`);
+
+  await setPassword(h, 'hunter2');
+  const holder = makeRes();
+  await list.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', url: '/dsh-lan/fs/list?path=' + encodeURIComponent(sandbox), headers: { 'x-dsh-lan-key': 'hunter2' } }), holder);
+  check('K3 a password holder may browse (that is what the dialog is for)', holder.statusCode === 200 && json(holder).ok === true, `status=${holder.statusCode} ${holder.body.slice(0, 120)}`);
+  rmSync(sandbox, { recursive: true, force: true });
 }
 
 // ── L. mobile keyboard: real client code on a stubbed DOM ──────────────────
