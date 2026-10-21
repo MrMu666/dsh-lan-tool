@@ -318,6 +318,23 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 ## 7. 历史修复（防回归）
 
+### 1.5.9 — 跑久了"连不上后端"（模型 400、插件消失）：teardown 时闭包碰到死 context
+
+- **现象**（用户实机，1.5.7，长时间运行后）：`模型操作失败: … transport failure for /api/session/selectModel: HTTP 400`，同时"看不到插件、像连不上后端"。**实测复现**：`GET /dsh-lan/status` 与 `/dsh-lan/diag` 都回 **400**，`/dsh-lan/` 与 `POST /dsh-lan/unlock` 却正常；`/api/pluginInventory/list` 走 `/lanapi` 回 **500**。
+- **时间线（2026-10-21 用户更正，重要）**：`profiles/desktop/.plugin-manager/logs/operation-cYelCv/pnpm.log` 里 08:44:38 的 `- dsh-lan-tool 1.5.7` 是**用户发现异常后自己卸载的**，不是触发源。它把状态从"部分功能坏"扩大成"整个 API 400"（teardown 残留），而**最初"跑久了会坏"的触发点仍未拿到日志**。⇒ 1.5.9 修的是"卸载/重载之后不再拖垮后端"这一半；要定位原始触发点，看下面第 5 条（watchdog）和 `/dsh-lan/diag` 的 `composition`。
+- **关键事实**：`dsh-host-webserver` 对**任何抛异常的路由处理器**回 **400 空 body**（`handle(req,res).catch(... res.writeHead(400); res.end())`）。所以"HTTP 400"这个症状 = **处理器在抛异常**，不是鉴权/路由问题。
+- **根因**：cordis 的服务 getter 在 provider fiber 被销毁后**会抛**（`ctx.webServer` 就是）。插件在 teardown / reload / 组合丢失 `webServer` 之后，仍然活着的**路由处理器**与**装在 `connection` 上的猴补丁**会去读那个死 context：
+  - `/dsh-lan/status`、`/dsh-lan/diag` 里 `ctx.webServer.port` / `ctx.webServer.host` 直接抛 → 400；
+  - `patchedIsTrusted` / `patchedAdmit` 调 `lanDoorOpen(ctx)`，任何一步抛 → **整个 `/api/*` 变成 400**（模型、插件、会话全挂）。
+  - 而 `return () => { proxy.stop(); removeFencePatch(...); scheduleDisposalCleanup(...); … disposers.forEach(...) }` 里**任何一步抛，后面全部不执行**：路由不注销、补丁不还原，于是这个"半拆"状态会一直存在（这就是"时间久了就坏，重启才好"）。
+- **修复（五条，都是"失败方向 = 退回官方行为/降级"，绝不把 DSH 弄崩）**：
+  1. `guarded(fallback, decide)`：`requestRejection` / `isTrusted` / `admit` 三个补丁**任何异常都退回官方方法**；`authorizeIndex` 同理（`headersSent` 时不再二次写响应）。
+  2. `routeHandler(handler)` + `registerRoute()`：每个 `/dsh-lan/*` 路由都被包一层，抛异常时回 **JSON 500**（或已发头则销毁 socket），不再变成空 400。
+  3. `webServerPort(ctx)` / `webServerHost(ctx)`：所有请求期读 `ctx.webServer` 的地方都走它们（拿不到就是 `0` / `""`），`/lanapi` 在端口为 0 时回 503 而不是拼 `127.0.0.1:0`。
+  4. `dispose` 逐步 `try/catch`（`step(label, run)`），**路由注销永远执行**；`ensureFencePatched` 的 `ctx.get` 也包 try/catch 回 false；`internal/service` 监听与 apply 期 `syncEnforcement` 都不许把异常抛进 loader。
+  5. **组合看门狗**：每 30 秒读一次 `webServerPort(ctx)`，服务"消失/恢复"各打一行日志；`/dsh-lan/diag` 增加 `composition: "ok" | "dead"`。这样下次"跑久了坏"时，日志能直接给出**服务消失的准确时刻**，不用再从 400 反推（`diag` 也不再因为同一次 teardown 而 400）。
+- **验证**：`npm test` **305 项全绿**（293 → 305；K4 段 9 项：死 `webServer` 下 status/diag 仍回 200、`dshPort=0`、`composition="dead"`、抛异常的请求对象下三个补丁各自退回官方结果、`dispose` 不抛且**路由全部注销**；H 段另锁 watchdog 存在/挂上 diag/dispose 清理）+ 真 Host e2e 36/36。**注意这只能自愈代码路径**：已经处于"半拆"状态的运行实例必须**重启**才能清掉内存里的旧路由/旧补丁。
+
 ### 1.5.8 — "新建工作区"不再报"无法打开文件夹"：影子选择器改用自己的文件系统原语
 
 - **现象**（用户实机，1.5.7）：点「添加工作区 / 新建工作区」→ 红字 `无法打开文件夹： directory browse failed: … directoryPicker/list failed: transport failure for /api/directoryPicker/list: HTTP 400`。

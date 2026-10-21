@@ -65,6 +65,8 @@ const check = (label, condition, detail = '') => {
 
 const OFFICIAL_REJECTION = { official: 'rejection' };
 const OFFICIAL_AUTHORIZE = 'official-authorize';
+const OFFICIAL_TRUSTED = 'official-trusted';
+const OFFICIAL_ADMIT = { official: 'admit' };
 
 function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
   const routes = new Map();
@@ -75,6 +77,12 @@ function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
     requestRejection() {
       calls.rejection += 1;
       return OFFICIAL_REJECTION;
+    },
+    isTrusted() {
+      return OFFICIAL_TRUSTED;
+    },
+    admit() {
+      return OFFICIAL_ADMIT;
     },
     browserAuth: {
       authorizeIndex() {
@@ -554,6 +562,11 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H listing keeps the official listing shape', server.includes('ancestryCrumbs(target)') && server.includes('hidden: dirent.name.startsWith(".")'));
   check('H the client calls the plugin routes first', client.includes('lanFsCall("/dsh-lan/fs/list" + query') && client.includes('lanFsCall("/dsh-lan/fs/mkdir"'));
   check('H an older node half still works through the official service', client.includes('!contentType.includes("application/json")') && client.includes('return browse.listDirectory(path, signal);'));
+  // 1.5.9 — the composition watchdog records the exact moment this plugin loses the
+  // webserver service, so a recurrence is diagnosable instead of guessed from 400s.
+  check('H the composition watchdog exists', server.includes('const watchdog = setInterval') && server.includes('the webServer service disappeared'));
+  check('H diag reports the composition state', server.includes('composition: webServerPort(ctx) > 0 ? "ok" : "dead"'));
+  check('H the watchdog is cleared on dispose', server.includes('clearInterval(watchdog)'));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
@@ -765,6 +778,69 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   await list.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', url: '/dsh-lan/fs/list?path=' + encodeURIComponent(sandbox), headers: { 'x-dsh-lan-key': 'hunter2' } }), holder);
   check('K3 a password holder may browse (that is what the dialog is for)', holder.statusCode === 200 && json(holder).ok === true, `status=${holder.statusCode} ${holder.body.slice(0, 120)}`);
   rmSync(sandbox, { recursive: true, force: true });
+}
+
+// ── K4. a torn-down composition must not break the request path (v1.5.9) ───
+// Reported (1.5.7, after running for a while): model calls failed with
+// `transport failure for /api/session/selectModel: HTTP 400`, plugins vanished,
+// "the backend is unreachable". `dsh-host-webserver` answers an EMPTY 400 to any
+// route handler that throws, so the symptom means "handlers are throwing". Once
+// the plugin is torn down (reload / removal / a composition that lost its
+// services) its closures reach a dead context: `ctx.webServer` itself throws.
+// Nothing this plugin installs may ever throw in that situation.
+{
+  const h = makeHarness({ bindHost: '127.0.0.1' });
+  // Simulate the dead service: a disposed cordis getter throws on read.
+  Object.defineProperty(h.ctx, 'webServer', {
+    configurable: true,
+    get() { throw new Error('service "webServer" is not available'); },
+  });
+
+  const status = makeRes();
+  let threw = null;
+  try {
+    await h.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), status);
+  } catch (error) {
+    threw = error;
+  }
+  check('K4 status answers instead of throwing on a dead webServer', threw === null && status.statusCode === 200 && json(status).ok === true, `threw=${String(threw)} status=${status.statusCode} body=${status.body.slice(0, 120)}`);
+
+  const diag = makeRes();
+  let diagThrew = null;
+  try {
+    await h.routes.get('exact /dsh-lan/diag').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), diag);
+  } catch (error) {
+    diagThrew = error;
+  }
+  check('K4 diag answers instead of throwing on a dead webServer', diagThrew === null && diag.statusCode === 200, `threw=${String(diagThrew)} status=${diag.statusCode}`);
+  check('K4 a dead webServer is reported as port 0, not as a crashed route', json(diag).dshPort === 0, String(json(diag).dshPort));
+  check('K4 diag names the dead composition', json(diag).composition === 'dead', String(json(diag).composition));
+
+  // The patched connection methods run inside DSH's request path: any throw there
+  // becomes a 400 for EVERY API call. A hostile request object (a getter that
+  // throws) stands in for "the closure reached something dead".
+  const hostile = {
+    method: 'GET',
+    url: '/',
+    headers: { host: '127.0.0.1:19387' },
+    get socket() { throw new Error('dead context'); },
+  };
+  check('K4 a throwing request degrades to the official rejection', h.connection.requestRejection(hostile) === OFFICIAL_REJECTION);
+  check('K4 a throwing request degrades to the official trust answer', h.connection.isTrusted(hostile) === OFFICIAL_TRUSTED);
+  check('K4 a throwing request degrades to the official admission', h.connection.admit(hostile) === OFFICIAL_ADMIT);
+
+  // And dispose itself: it runs while the tree is being torn down, so it must not
+  // throw — and it must still unregister every route (a live route on a dead
+  // plugin is exactly the 400 generator).
+  const registered = h.routes.size;
+  let disposeThrew = null;
+  try {
+    h.dispose();
+  } catch (error) {
+    disposeThrew = error;
+  }
+  check('K4 dispose never throws on a dead context', disposeThrew === null, String(disposeThrew));
+  check('K4 dispose still unregisters every route', registered > 0 && h.routes.size === 0, `before=${registered} after=${h.routes.size}`);
 }
 
 // ── L. mobile keyboard: real client code on a stubbed DOM ──────────────────
