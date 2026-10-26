@@ -578,7 +578,9 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the dead connection.api wrapper is gone', !client.includes('function wrapApi') && !client.includes('api.postJson') && !client.includes('__dshLanWrapped'));
   check('H the fetch reroute is the only transport hook', client.includes('function installLanFetchReroute') && client.includes('window.fetch = function (input, init)'));
   // 1.6.0 — rc.3 dropped `_railFish`; the rail controls are `_panelRow`/`_iconButton`.
-  check('H the rail touch rule targets rc.3 classes', client.includes('[class$=\\"_collapsed\\"] [class$=\\"_panelRow\\"]') && client.includes('[class$=\\"_collapsed\\"] [class$=\\"_iconButton\\"]') && !client.includes('[class$=\\"_railFish\\"]'));
+  // The still-existing pre-rc.3 targets ( `_panelIcon` / `_newSession` ) must stay, so
+  // the only change is that the rule reaches the rail again instead of matching nothing.
+  check('H the rail touch rule targets rc.3 classes and keeps the surviving old ones', client.includes('[class$=\\"_collapsed\\"] [class$=\\"_panelRow\\"]') && client.includes('[class$=\\"_collapsed\\"] [class$=\\"_iconButton\\"]') && client.includes('[class$=\\"_panelIcon\\"]') && client.includes('[class$=\\"_newSession\\"]') && !client.includes('[class$=\\"_railFish\\"]'));
   // 1.6.0 — unknown `/dsh-lan/fs/*` paths answer JSON 404 instead of DSH's SPA
   // fallback (frontend-static claims the fallback seat since 0.2.1-rc.3).
   check('H the fs namespace has its own JSON 404', server.includes('path: "/dsh-lan/fs"') && server.includes('unknown dsh-lan fs endpoint'));
