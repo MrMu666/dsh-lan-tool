@@ -70,7 +70,7 @@ const OFFICIAL_ADMIT = { official: 'admit' };
 
 function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
   const routes = new Map();
-  const calls = { rejection: 0, authorize: 0, fetchPeers: [] };
+  const calls = { rejection: 0, authorize: 0, authorizeSecure: [], fetchPeers: [] };
   const browserPeer = { id: 'browser-peer', principal: { kind: 'owner' } };
   const connection = {
     browserPeer,
@@ -85,8 +85,9 @@ function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
       return OFFICIAL_ADMIT;
     },
     browserAuth: {
-      authorizeIndex() {
+      authorizeIndex(req, res, secure) {
         calls.authorize += 1;
+        calls.authorizeSecure.push(secure);
         return OFFICIAL_AUTHORIZE;
       },
     },
@@ -426,7 +427,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H no bare isLoopback() call site remains', !/isLoopback\(\)/.test(client));
   check('H the gate asks the server first', client.includes('if ((await detectLocalClient()) !== false) return;'));
   check('H mountGate needs an explicit remote verdict', client.includes('if (!shouldGate() || gateRoot !== null) return;'));
-  check('H every 403 path uses the evidence-only helper', !client.includes('if (!clientIsLocal()) mountGate();') && (client.match(/if \(shouldGate\(\)\) mountGate\(\);/g) || []).length === 3);
+  check('H every 403 path uses the evidence-only helper', !client.includes('if (!clientIsLocal()) mountGate();') && (client.match(/if \(shouldGate\(\)\) mountGate\(\);/g) || []).length === 2);
   check('H a wrong gate self-heals', client.includes('if (localClient === true) removeGate();'));
   check('H card uses the server flag', client.includes('data.local === true'));
   check('H posture uses the server flag', client.includes('markNonLocalPosture(await detectLocalClient())'));
@@ -567,6 +568,20 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the composition watchdog exists', server.includes('const watchdog = setInterval') && server.includes('the webServer service disappeared'));
   check('H diag reports the composition state', server.includes('composition: webServerPort(ctx) > 0 ? "ok" : "dead"'));
   check('H the watchdog is cleared on dispose', server.includes('clearInterval(watchdog)'));
+  // 1.6.0 — the plugin now targets exactly one DSH release (0.2.1-rc.3). The
+  // manifest gate is `engines.dsh` (dsh-app-boot checks engines.dsh and, when
+  // present, ignores peers entirely), so the pin has to live there.
+  check('H the manifest pins exactly the supported DSH release', pkg.engines?.dsh === '0.2.1-rc.3', JSON.stringify(pkg.engines));
+  check('H the compatibility metadata names only that release', pkg.dsh?.compatibility?.dsh === '0.2.1-rc.3' && Object.keys(pkg.dsh.compatibility.dshReleases ?? {}).join(',') === '0.2.1-rc.3', JSON.stringify(pkg.dsh?.compatibility));
+  // 1.6.0 — rc.3 removed `connection.api`/`postJson`, so the per-service wrapper
+  // is dead code; every remote call goes through window.fetch (the fetch reroute).
+  check('H the dead connection.api wrapper is gone', !client.includes('function wrapApi') && !client.includes('api.postJson') && !client.includes('__dshLanWrapped'));
+  check('H the fetch reroute is the only transport hook', client.includes('function installLanFetchReroute') && client.includes('window.fetch = function (input, init)'));
+  // 1.6.0 — rc.3 dropped `_railFish`; the rail controls are `_panelRow`/`_iconButton`.
+  check('H the rail touch rule targets rc.3 classes', client.includes('[class$=\\"_collapsed\\"] [class$=\\"_panelRow\\"]') && client.includes('[class$=\\"_collapsed\\"] [class$=\\"_iconButton\\"]') && !client.includes('[class$=\\"_railFish\\"]'));
+  // 1.6.0 — unknown `/dsh-lan/fs/*` paths answer JSON 404 instead of DSH's SPA
+  // fallback (frontend-static claims the fallback seat since 0.2.1-rc.3).
+  check('H the fs namespace has its own JSON 404', server.includes('path: "/dsh-lan/fs"') && server.includes('unknown dsh-lan fs endpoint'));
 }
 
 // ── I. client half: the gate decision runs on real source ──────────────────
@@ -777,6 +792,12 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const holder = makeRes();
   await list.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', url: '/dsh-lan/fs/list?path=' + encodeURIComponent(sandbox), headers: { 'x-dsh-lan-key': 'hunter2' } }), holder);
   check('K3 a password holder may browse (that is what the dialog is for)', holder.statusCode === 200 && json(holder).ok === true, `status=${holder.statusCode} ${holder.body.slice(0, 120)}`);
+  // v1.6.0 — DSH's frontend-static owns the webserver fallback seat, so a path
+  // no route claims would be served as the SPA shell (`200 text/html`). The fs
+  // namespace answers JSON instead, which is what the client probes for.
+  const unknownFs = makeRes();
+  await h.routes.get('prefix /dsh-lan/fs').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/dsh-lan/fs/nope' }), unknownFs);
+  check('K3 an unknown fs path answers JSON 404, not the SPA', unknownFs.statusCode === 404 && json(unknownFs).ok === false && json(unknownFs).error.code === 'not-found', `status=${unknownFs.statusCode} ${unknownFs.body.slice(0, 120)}`);
   rmSync(sandbox, { recursive: true, force: true });
 }
 
@@ -1069,6 +1090,33 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
     single === 1 && h.calls.authorize - before === 2 && res2.statusCode === 0,
     `single=${single} total=${h.calls.authorize - before} status=${res2.statusCode}`,
   );
+}
+
+// ── N2. authorizeIndex forwards DSH's `secure` flag (v1.6.0) ───────────────
+// DSH 0.2.1-rc.3 added a third parameter: the official callers pass
+// `webServer.protocol === "https:"` and BrowserAuth uses it for the session
+// cookie's `Secure` attribute. Every delegation this plugin makes must carry it
+// through — dropping it silently downgrades a TLS deployment's cookie.
+{
+  const h = makeHarness({ bindHost: '0.0.0.0' });
+  await setPassword(h, 'hunter2');
+  // A password-holding LAN device on `/`: delegate, flag intact.
+  h.connection.browserAuth.authorizeIndex(
+    makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { cookie: 'dsh-lan-key=hunter2' } }),
+    makeRes(),
+    true,
+  );
+  check('N2 secure survives the landing delegation', h.calls.authorizeSecure.at(-1) === true, String(h.calls.authorizeSecure.at(-1)));
+  // The desktop shell's launch-token exchange delegates too (the 1.4.5 contract).
+  h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=abc' }), makeRes(), true);
+  check('N2 secure survives the token-exchange delegation', h.calls.authorizeSecure.at(-1) === true, String(h.calls.authorizeSecure.at(-1)));
+  // A two-argument caller (an older Host) still works and defaults to false.
+  h.connection.browserAuth.authorizeIndex(
+    makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { cookie: 'dsh-lan-key=hunter2' } }),
+    makeRes(),
+  );
+  check('N2 a two-argument caller defaults to non-secure', h.calls.authorizeSecure.at(-1) === false, String(h.calls.authorizeSecure.at(-1)));
+  h.dispose();
 }
 
 // ── O. v1.5.0 LAN proxy: the door, its gate, and the tunnel ────────────────

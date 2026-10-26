@@ -2,7 +2,7 @@
 
 dsh-lan-tool — a plugin that brings the [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI to your local network (password-protected; mobile reuses the official desktop UI with an injected portrait touch adaptation).
 
-> ⚠️ **Version requirement: `@deepseek-ai/dsh` `0.2.0-rc.2` and newer; verified on the 0.2.1-rc.2 desktop build.** The 0.1.x APIs (`dsh-host-apiproxy`, dotted endpoints, the client-side `settingsScope` service) are no longer compatible — upgrade DSH first.
+> ⚠️ **Version requirement (pinned in 1.6.0): `@deepseek-ai/dsh` `0.2.1-rc.3` only (desktop 0.2.1-rc.3).** `package.json`'s `engines.dsh` names exactly that release: installing or enabling the plugin on any other DSH version is refused as `incompatible-version` — deliberately, because the plugin rewrites internal `connection`/`webServer` behaviour and promises no cross-version compatibility. After a DSH upgrade, wait for the matching plugin release.
 >
 > 🔧 **1.5.0 changed how LAN access is implemented (read this before upgrading)**: since 0.2.1 DSH refuses to bind a wildcard address (`0.0.0.0`), while the desktop shell requires DSH itself to stay on `127.0.0.1`. So the plugin **no longer touches any DSH binding**: DSH keeps its official loopback-only listener and **the plugin's own built-in reverse proxy** serves your machine's LAN addresses, **reusing the same port number**. Your LAN URL and workflow are unchanged — but **the override older versions left in the profile patch makes 0.2.1 refuse to start**, so read the [Upgrading](#upgrading-14x--150important) section first.
 
