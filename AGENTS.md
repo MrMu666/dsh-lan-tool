@@ -17,6 +17,7 @@ lib/index.js      node 半边（host 平面）：状态文件、防火墙、口�
 lib/lan-proxy.js  局域网反向代理（v1.5.0 起"局域网访问"的实现本体）：按接口地址监听 + HTTP/WS 反代
 lib/client.js     浏览器半边：登录门、移动端触控适配、设置页「局域网访问」卡片、侧栏锁定按钮、工作区目录选择器（影子）
 lib/landing.html  门后落地页（口令 → /dsh-lan/unlock → /dsh-lan/mint → 干净 /）
+LICENSE           MIT 许可证（Copyright © 2026 MrMu666）
 README.md / README.en.md   面向用户；**不放更新记录**
 test/loopback-gate.test.mjs   `npm test`（离线，自包含）
 test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会占用局域网监听端口）

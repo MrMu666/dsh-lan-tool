@@ -1,6 +1,26 @@
-# dsh-lan-tool
+<h1 align="center">dsh-lan-tool</h1>
 
-dsh-lan-tool — a plugin that brings the [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI to your local network (password-protected; mobile reuses the official desktop UI with an injected portrait touch adaptation).
+<p align="center">
+  <b>Password-gated LAN access for the <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> Web GUI</b><br>
+  Full access over the LAN · plugin-owned reverse proxy · no password on the host · mobile touch adaptation
+</p>
+
+<p align="center">
+  <a href="README.md"><kbd>简体中文</kbd></a>
+  &nbsp;
+  <a href="README.en.md"><kbd><b>English</b></kbd></a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-lan-tool?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
+  <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-lan-tool?style=flat-square&amp;label=downloads&amp;color=2f6fed"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.1-rc.5" src="https://img.shields.io/badge/DSH-0.2.1--rc.5-4c8dff?style=flat-square"></a>
+  <a href="https://github.com/MrMu666/dsh-lan-tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/MrMu666/dsh-lan-tool?style=flat-square&amp;label=release&amp;color=8957e5"></a>
+  <a href="https://github.com/MrMu666/dsh-lan-tool/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/MrMu666/dsh-lan-tool?style=flat-square&amp;label=stars&amp;color=e3b341"></a>
+</p>
+
+---
 
 > ⚠️ **Version requirement (deliberately pinned since 1.6.0): `1.6.1` supports `@deepseek-ai/dsh` `0.2.1-rc.5` only (desktop 0.2.1-rc.5).** `engines.dsh` names exactly that release: installing or enabling the plugin on any other DSH version is refused as `incompatible-version` — deliberately, because the plugin rewrites internal `connection`/`webServer` behaviour and promises no cross-version compatibility. Users still on 0.2.1-rc.3 should stay on `dsh-lan-tool@1.6.0`; after the next DSH upgrade, wait for the matching plugin release.
 >
@@ -190,4 +210,4 @@ Early mobile work referenced [dsh-remote-web-ui from dsh-web-ui](https://github.
 
 ## License
 
-[MIT](package.json) (`license: MIT`)
+Released under the [MIT License](LICENSE) (Copyright © 2026 MrMu666).

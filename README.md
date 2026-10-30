@@ -1,6 +1,26 @@
-# dsh-lan-tool
+<h1 align="center">dsh-lan-tool</h1>
 
-[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI 的局域网访问插件（带口令的全功能版；**移动端优化官方界面 UI，适配竖屏及触控手势**）。
+<p align="center">
+  <b><a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> Web GUI 的局域网访问插件</b><br>
+  带口令的全功能版 · 插件内置反向代理 · 主机免口令 · 移动端触控适配
+</p>
+
+<p align="center">
+  <a href="README.md"><kbd><b>简体中文</b></kbd></a>
+  &nbsp;
+  <a href="README.en.md"><kbd>English</kbd></a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-lan-tool?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
+  <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-lan-tool?style=flat-square&amp;label=downloads&amp;color=2f6fed"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.1-rc.5" src="https://img.shields.io/badge/DSH-0.2.1--rc.5-4c8dff?style=flat-square"></a>
+  <a href="https://github.com/MrMu666/dsh-lan-tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/MrMu666/dsh-lan-tool?style=flat-square&amp;label=release&amp;color=8957e5"></a>
+  <a href="https://github.com/MrMu666/dsh-lan-tool/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/MrMu666/dsh-lan-tool?style=flat-square&amp;label=stars&amp;color=e3b341"></a>
+</p>
+
+---
 
 > ⚠️ **版本要求（1.6.0 起刻意钉死）：`1.6.1` 仅支持 `@deepseek-ai/dsh` `0.2.1-rc.5`（桌面版 0.2.1-rc.5）**。`package.json` 的 `engines.dsh` 锁定该精确版本：在其它 DSH 版本上安装/启用会被判为 `incompatible-version` 而拒绝（这是有意为之——插件直接改写 `connection`、`webServer` 的内部行为，跨版本不做兼容承诺）。仍在使用 0.2.1-rc.3 的用户请继续用 `dsh-lan-tool@1.6.0`；DSH 再次升级后请等待对应版本的插件发布。
 >
@@ -190,4 +210,4 @@ dsh plugin --profile desktop remove dsh-lan-tool
 
 ## 许可证
 
-[MIT](package.json)（`license: MIT`）
+[MIT 许可证](LICENSE)（Copyright © 2026 MrMu666）
