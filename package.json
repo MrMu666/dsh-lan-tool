@@ -1,6 +1,6 @@
 {
   "name": "dsh-lan-tool",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "LAN access for the DeepSeek Harness Web GUI: a password-gated LAN channel whose on/off switch lives in Settings (no install scripts, no password prompt at install time). Serves the LAN from the plugin's own reverse proxy, so DSH's listener stays on loopback.",
   "type": "module",
   "main": "lib/index.js",
@@ -24,9 +24,9 @@
     },
     "compatibility": {
       "dshReleases": {
-        "0.2.1-rc.3": "compatible"
+        "0.2.1-rc.5": "compatible"
       },
-      "dsh": "0.2.1-rc.3"
+      "dsh": "0.2.1-rc.5"
     },
     "client": {
       "inject": [
@@ -45,7 +45,7 @@
     "@deepseek-ai/dsh-client-connection": "*"
   },
   "engines": {
-    "dsh": "0.2.1-rc.3",
+    "dsh": "0.2.1-rc.5",
     "node": ">=22"
   },
   "keywords": [

@@ -20,6 +20,8 @@ import { dirname, join } from 'node:path';
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-lan-test-'));
 process.env.DSH_HOME = HOME;
 const PATCH = join(HOME, 'profiles', 'desktop', 'cordis.patch.yml');
+/** The one DSH release this plugin version pins; bump together with package.json. */
+const SUPPORTED_DSH = '0.2.1-rc.5';
 
 // The firewall must never be touched for real: stub node:child_process. The
 // stub is scriptable, so the firewall verdicts below can be driven through the
@@ -568,11 +570,11 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the composition watchdog exists', server.includes('const watchdog = setInterval') && server.includes('the webServer service disappeared'));
   check('H diag reports the composition state', server.includes('composition: webServerPort(ctx) > 0 ? "ok" : "dead"'));
   check('H the watchdog is cleared on dispose', server.includes('clearInterval(watchdog)'));
-  // 1.6.0 — the plugin now targets exactly one DSH release (0.2.1-rc.3). The
+  // 1.6.1 — the plugin targets exactly one DSH release (0.2.1-rc.5). The
   // manifest gate is `engines.dsh` (dsh-app-boot checks engines.dsh and, when
   // present, ignores peers entirely), so the pin has to live there.
-  check('H the manifest pins exactly the supported DSH release', pkg.engines?.dsh === '0.2.1-rc.3', JSON.stringify(pkg.engines));
-  check('H the compatibility metadata names only that release', pkg.dsh?.compatibility?.dsh === '0.2.1-rc.3' && Object.keys(pkg.dsh.compatibility.dshReleases ?? {}).join(',') === '0.2.1-rc.3', JSON.stringify(pkg.dsh?.compatibility));
+  check('H the manifest pins exactly the supported DSH release', pkg.engines?.dsh === SUPPORTED_DSH, JSON.stringify(pkg.engines));
+  check('H the compatibility metadata names only that release', pkg.dsh?.compatibility?.dsh === SUPPORTED_DSH && Object.keys(pkg.dsh.compatibility.dshReleases ?? {}).join(',') === SUPPORTED_DSH, JSON.stringify(pkg.dsh?.compatibility));
   // 1.6.0 — rc.3 removed `connection.api`/`postJson`, so the per-service wrapper
   // is dead code; every remote call goes through window.fetch (the fetch reroute).
   check('H the dead connection.api wrapper is gone', !client.includes('function wrapApi') && !client.includes('api.postJson') && !client.includes('__dshLanWrapped'));
@@ -1095,10 +1097,10 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 }
 
 // ── N2. authorizeIndex forwards DSH's `secure` flag (v1.6.0) ───────────────
-// DSH 0.2.1-rc.3 added a third parameter: the official callers pass
-// `webServer.protocol === "https:"` and BrowserAuth uses it for the session
-// cookie's `Secure` attribute. Every delegation this plugin makes must carry it
-// through — dropping it silently downgrades a TLS deployment's cookie.
+// DSH 0.2.1-rc.3 added a third parameter (still present in rc.5): the official
+// callers pass `webServer.protocol === "https:"` and BrowserAuth uses it for the
+// session cookie's `Secure` attribute. Every delegation this plugin makes must
+// carry it through — dropping it silently downgrades a TLS deployment's cookie.
 {
   const h = makeHarness({ bindHost: '0.0.0.0' });
   await setPassword(h, 'hunter2');

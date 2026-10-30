@@ -2,7 +2,7 @@
 
 dsh-lan-tool — a plugin that brings the [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI to your local network (password-protected; mobile reuses the official desktop UI with an injected portrait touch adaptation).
 
-> ⚠️ **Version requirement (pinned in 1.6.0): `@deepseek-ai/dsh` `0.2.1-rc.3` only (desktop 0.2.1-rc.3).** `package.json`'s `engines.dsh` names exactly that release: installing or enabling the plugin on any other DSH version is refused as `incompatible-version` — deliberately, because the plugin rewrites internal `connection`/`webServer` behaviour and promises no cross-version compatibility. After a DSH upgrade, wait for the matching plugin release.
+> ⚠️ **Version requirement (deliberately pinned since 1.6.0): `1.6.1` supports `@deepseek-ai/dsh` `0.2.1-rc.5` only (desktop 0.2.1-rc.5).** `engines.dsh` names exactly that release: installing or enabling the plugin on any other DSH version is refused as `incompatible-version` — deliberately, because the plugin rewrites internal `connection`/`webServer` behaviour and promises no cross-version compatibility. Users still on 0.2.1-rc.3 should stay on `dsh-lan-tool@1.6.0`; after the next DSH upgrade, wait for the matching plugin release.
 >
 > 🔧 **1.5.0 changed how LAN access is implemented (read this before upgrading)**: since 0.2.1 DSH refuses to bind a wildcard address (`0.0.0.0`), while the desktop shell requires DSH itself to stay on `127.0.0.1`. So the plugin **no longer touches any DSH binding**: DSH keeps its official loopback-only listener and **the plugin's own built-in reverse proxy** serves your machine's LAN addresses, **reusing the same port number**. Your LAN URL and workflow are unchanged — but **the override older versions left in the profile patch makes 0.2.1 refuse to start**, so read the [Upgrading](#upgrading-14x--150important) section first.
 
@@ -54,7 +54,7 @@ DSH deliberately withholds the settings scope from non-loopback browsers (`persi
 
 ### Mobile interaction details
 
-- **Sidebar**: hidden while collapsed — the draggable **whale button** at the top-left is the entry point (its drag position is remembered). Tapping a session row, tapping anywhere else, or **swiping left** collapses it; in the conversation view **swiping right** expands the sidebar directly.
+- **Sidebar**: hidden while collapsed — the **whale button** at the top-left of the header is the entry point (fixed in the title row; it no longer drags). Tapping a session row, tapping anywhere else, or **swiping left** collapses it; in the conversation view **swiping right** expands the sidebar directly.
 - **Keyboard**: the input method appears **only when you tap a text field** — tapping the whale, a session row, toggling the sidebar or closing a dialog no longer pops it (and it is never taken away while you are typing); **Enter inserts a newline instead of sending** (sending goes through the send button; Enter while an IME candidate list is open still commits the candidate).
 - **UI details**: lingering official Tooltip bubbles are hidden; the `ask_user_question` card is fully adapted to narrow screens (42px option touch targets); the permission/model two-line layout and the bottom stats bar stay aligned with the composer.
 - **No password-page flicker**: if the browser cannot keep the login credential (e.g. the page is embedded in a cross-site iframe/WebView, where a `SameSite=Strict` cookie is dropped), the password page stops auto-redirecting after 2 hops and explains the problem instead of looping forever.
@@ -67,7 +67,7 @@ Open the DSH sidebar **Plugins** page and install the package name **`dsh-lan-to
 
 > ⚠️ **After installing (or updating) the plugin, fully quit and reopen the desktop app once.** The plugin's node half (the password gate, the switch and every `/dsh-lan/*` route) is imported once per app run: **reinstalling or upgrading inside a running app leaves the node half on the old code**, while the browser half does hot-reload — a mixed pair. Since 1.4.2 the client reports that mismatch in the settings card and the console (in older versions it showed up as an unexplained password page).
 >
-> ⚠️ **A brand-new release may not install (pnpm's minimum release age)**: pnpm refuses packages published too recently, and the plugin manager only exempts the versions it has actually installed before — so typing the package name can silently resolve to the **previous** version (the new features and fixes never appear). Ask for the version explicitly (e.g. `dsh-lan-tool@1.4.2`), or add it to `minimumReleaseAgeExclude` in `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` first.
+> ⚠️ **A brand-new release may not install (pnpm's minimum release age)**: pnpm refuses packages published too recently, and the plugin manager only exempts the versions it has actually installed before — so typing the package name can silently resolve to the **previous** version (the new features and fixes never appear). Ask for the version explicitly (e.g. `dsh-lan-tool@1.6.1`), or add it to `minimumReleaseAgeExclude` in `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` first.
 >
 > This requires the package to be published on npm. If it is not published yet (or you want to install this local checkout), use option 2.
 
@@ -104,6 +104,8 @@ Quit the desktop app before running the CLI (`dsh-desktop-host` says so in its m
 > ```
 >
 > Delete those two lines and save — DSH hot-reloads, and **a page refresh** brings the card back. (The same failure shows up as: no card in Settings, `http://127.0.0.1:<port>/dsh-lan/status` answering 404, and unreachable LAN URLs.)
+
+> ⚠️ **Moved out of the enabled list after a DSH upgrade?** The profile may keep `dsh-lan-tool` only in `dependencies` while `dsh.profile.bundles` no longer lists it (the same symptoms: no card in Settings, `/dsh-lan/status` answering 404). **Updating an existing dependency does not re-add it to the bundles.** After installing `dsh-lan-tool@1.6.1`, re-enable it on the Plugins page, then fully quit and reopen the desktop app. If there is no enable control, quit DSH and append `"dsh-lan-tool"` to `dsh.profile.bundles` in `profiles/<profile>/package.json`, then start it again.
 
 ### Firewall notes
 
