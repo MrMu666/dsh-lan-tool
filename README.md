@@ -2,7 +2,7 @@
 
 <p align="center">
   <b><a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> Web GUI 的局域网访问插件</b><br>
-  带口令的全功能版 · 插件内置反向代理 · 主机免口令 · 移动端触控适配
+  带口令的全功能版 · 插件内置反向代理 · 主机免口令 · 手机/平板直接用官方窄屏界面
 </p>
 
 <p align="center">
@@ -15,14 +15,14 @@
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-lan-tool?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-lan-tool?style=flat-square&amp;label=downloads&amp;color=2f6fed"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square"></a>
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.1-rc.5" src="https://img.shields.io/badge/DSH-0.2.1--rc.5-4c8dff?style=flat-square"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.2-rc.1" src="https://img.shields.io/badge/DSH-0.2.2--rc.1-4c8dff?style=flat-square"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/MrMu666/dsh-lan-tool?style=flat-square&amp;label=release&amp;color=8957e5"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/MrMu666/dsh-lan-tool?style=flat-square&amp;label=stars&amp;color=e3b341"></a>
 </p>
 
 ---
 
-> ⚠️ **版本要求（1.6.0 起刻意钉死）：`1.6.1` 仅支持 `@deepseek-ai/dsh` `0.2.1-rc.5`（桌面版 0.2.1-rc.5）**。`package.json` 的 `engines.dsh` 锁定该精确版本：在其它 DSH 版本上安装/启用会被判为 `incompatible-version` 而拒绝（这是有意为之——插件直接改写 `connection`、`webServer` 的内部行为，跨版本不做兼容承诺）。仍在使用 0.2.1-rc.3 的用户请继续用 `dsh-lan-tool@1.6.0`；DSH 再次升级后请等待对应版本的插件发布。
+> ⚠️ **版本要求（1.6.0 起刻意钉死）：`1.7.0` 仅支持 `@deepseek-ai/dsh` `0.2.2-rc.1`（桌面版 0.2.2-rc.1）**。`package.json` 的 `engines.dsh` 锁定该精确版本：在其它 DSH 版本上安装/启用会被判为 `incompatible-version` 而拒绝（这是有意为之——插件直接改写 `connection`、`webServer` 的内部行为，跨版本不做兼容承诺）。仍在使用 0.2.1-rc.5 的用户请继续用 `dsh-lan-tool@1.6.1`；DSH 再次升级后请等待对应版本的插件发布。
 >
 > 🔧 **1.5.0 起换了实现方式（重要，升级必读）**：0.2.1 起 DSH 不再允许把监听地址绑到通配地址（`0.0.0.0`），而桌面端又要求 DSH 自己必须听 `127.0.0.1`，所以本插件**不再改动 DSH 的任何绑定**：它保持官方默认只听本机，由**插件自己内置的反向代理**在你机器的局域网地址上提供入口（**复用同一个端口号**）。升级后局域网地址与用法完全不变，但**旧版本留在 profile 补丁里的那段覆盖会让 0.2.1 直接起不来**——请先看下面的[「升级」](#升级140--150重要)一节。
 
@@ -46,8 +46,6 @@
 
 ![局域网口令设置](docs/局域网口令设置.png)
 
-<img src="docs/手机端展示.png" alt="手机端展示" width="50%">
-
 </div>
 
 ## ⚠️ 安全说明
@@ -67,16 +65,11 @@ DSH 官方对**非本机浏览器**刻意不提供设置作用域（`dsh-client-
 | 设置 / 权限预设 / 凭据 / 预设管理页面 | ❌ 只在主机上可用（请在主机上修改） |
 | 工作区目录选择 | ✅ 插件自带的目录选择器（含盘符下拉、路径跳转） |
 
-## 移动端（竖屏手机/平板）
+## 移动端（手机/平板）
 
-- 移动端**复用官方桌面界面**：手机竖屏打开 `http://<本机IP>:<端口>` 时，插件在官方界面之上注入触控适配（紧凑侧栏、≥44px 触控目标、16px 输入字号防 iOS 聚焦缩放、安全区 padding），横屏/桌面视口自动还原。
-- 所有可用能力与桌面端相同（见上表）：会话/工作区/历史对话/实时聊天/模型与模式切换/任务清单/审批提问/权限切换等，全部与主机实时同步。
-
-### 移动端交互细节
-
-- **侧边栏**：折叠时隐藏，左上角**小鲸鱼**按钮是展开入口（固定在标题栏左侧，不再拖拽）；点击会话行、点击页面其他区域、或**左滑**均可收起；对话界面**右滑**可直接展开侧边栏。
-- **输入法**：**只有点击输入框才会弹出输入法** —— 点小鲸鱼、点会话列表、开关侧边栏、关闭弹窗都不会再误弹（正在打字时也不会被抢走）；**Enter 只换行、不发送**（发送走发送按钮；输入法选词时的 Enter 仍用于上屏）。
-- **界面细节**：隐藏官方 Tooltip 气泡残留（收起/发送等黑底提示）；模型提问（`ask_user_question`）卡片完整适配窄屏（选项 42px 触控目标）；权限/模型两行布局与底部状态栏对齐。
+- 移动端**直接使用 DSH 官方界面**：0.2.2 起官方前端自带窄屏布局（<768px 侧栏变浮层抽屉、<1024px 自动折叠、折叠屏姿态、软键盘与触控菜单均已适配），本插件**不再注入任何移动端布局/触控补丁**。
+- 手机打开 `http://<本机IP>:<端口>`，输入口令即可进入；能力与桌面端相同（见上表）。
+- 输入行为以官方设置为准（默认 Enter 发送、Shift+Enter 换行，可在主机设置里调整）。
 - **口令页防抖**：若浏览器不保存登录凭据（例如把页面放进跨站 iframe/内嵌窗口，`SameSite=Strict` 的 Cookie 会被丢弃），口令页最多自动跳转 2 次即停下并给出提示，不会无限闪烁。
 
 ## 安装
@@ -87,7 +80,7 @@ DSH 官方对**非本机浏览器**刻意不提供设置作用域（`dsh-client-
 
 > ⚠️ **装完（或更新后）请完全退出桌面版再重新打开一次。** 插件的 node 半边（口令门、开关、`/dsh-lan/*` 路由都在这里）只在应用启动时载入一次；**同一个应用进程内重装/升级插件，node 半边仍是旧代码**（浏览器半边会热更新，于是出现"一半新一半旧"）。1.4.2 起客户端会把这种不一致直接写在设置卡片与控制台里（旧版表现为一个没人能解释的口令页）。
 >
-> ⚠️ **刚发布的版本可能装不上（pnpm 的"发布年龄"策略）**：pnpm 默认不装太新的包，插件管理器只会给它**实际装到过的版本**豁免，于是你在 Plugins 页输入包名时可能被解析回**上一个版本**（表现：新版本的功能/修复没出现）。此时在 Plugins 页显式写版本（如 `dsh-lan-tool@1.6.1`），或把该版本加进 `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 再装。
+> ⚠️ **刚发布的版本可能装不上（pnpm 的"发布年龄"策略）**：pnpm 默认不装太新的包，插件管理器只会给它**实际装到过的版本**豁免，于是你在 Plugins 页输入包名时可能被解析回**上一个版本**（表现：新版本的功能/修复没出现）。此时在 Plugins 页显式写版本（如 `dsh-lan-tool@1.7.0`），或把该版本加进 `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 再装。
 >
 > 前提：该包已发布到 npm。若尚未发布（或你想装本地这份代码），用方式 2。
 
@@ -125,7 +118,7 @@ CLI 路径需要**先退出桌面版**再执行（`dsh-desktop-host` 的提示�
 >
 > 删掉这两行保存即可——DSH 会热加载，**刷新页面**卡片就回来了（症状同时包括：设置页没有卡片、`http://127.0.0.1:<端口>/dsh-lan/status` 返回 404、局域网地址无法访问）。
 
-> ⚠️ **升级 DSH 后插件被移出启用列表？** profile 可能只在 `dependencies` 里保留 `dsh-lan-tool`，而 `dsh.profile.bundles` 中没有它（症状同样是设置页没有卡片、`/dsh-lan/status` 返回 404）。**只更新已有依赖不会把插件重新加入 bundles**；装好 `dsh-lan-tool@1.6.1` 后，请在 Plugins 页把它重新启用，然后完全退出并重启桌面版。若页面没有提供启用入口，退出 DSH 后在 `profiles/<profile>/package.json` 的 `dsh.profile.bundles` 末尾补 `"dsh-lan-tool"`，再启动。
+> ⚠️ **升级 DSH 后插件被移出启用列表？** profile 可能只在 `dependencies` 里保留 `dsh-lan-tool`，而 `dsh.profile.bundles` 中没有它（症状同样是设置页没有卡片、`/dsh-lan/status` 返回 404）。**只更新已有依赖不会把插件重新加入 bundles**；装好 `dsh-lan-tool@1.7.0` 后，请在 Plugins 页把它重新启用，然后完全退出并重启桌面版。若页面没有提供启用入口，退出 DSH 后在 `profiles/<profile>/package.json` 的 `dsh.profile.bundles` 末尾补 `"dsh-lan-tool"`，再启动。
 
 ### 防火墙说明
 
@@ -206,7 +199,7 @@ dsh plugin --profile desktop remove dsh-lan-tool
 
 ## 参考
 
-早期移动端实现参考过 [dsh-web-ui 的 dsh-remote-web-ui](https://github.com/zhu1090093659/dsh-web-ui)（独立轻量远程界面 + 令牌门）；移动端自 v48 起直接复用官方桌面界面（插件注入竖屏适配），口令模型不变。
+早期移动端实现参考过 [dsh-web-ui 的 dsh-remote-web-ui](https://github.com/zhu1090093659/dsh-web-ui)（独立轻量远程界面 + 令牌门）；v48 起改为直接复用官方界面，1.7.0 起官方 0.2.2 自带窄屏布局，插件不再注入竖屏适配，口令模型不变。
 
 ## 许可证
 

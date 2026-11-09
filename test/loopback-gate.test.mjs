@@ -21,7 +21,7 @@ const HOME = mkdtempSync(join(tmpdir(), 'dsh-lan-test-'));
 process.env.DSH_HOME = HOME;
 const PATCH = join(HOME, 'profiles', 'desktop', 'cordis.patch.yml');
 /** The one DSH release this plugin version pins; bump together with package.json. */
-const SUPPORTED_DSH = '0.2.1-rc.5';
+const SUPPORTED_DSH = '0.2.2-rc.1';
 
 // The firewall must never be touched for real: stub node:child_process. The
 // stub is scriptable, so the firewall verdicts below can be driven through the
@@ -443,35 +443,19 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H firewall rule names are sanitized before they reach the card', server.includes('sanitizeFirewallNote(system.name'));
   check('H the card treats a rebind refusal as expected, not as an error', client.includes('isTransientFetchError(message) && (inRebindWindow() || previous?.applying === true)'));
   check('H a toggle marks the rebind window and keeps polling', client.includes('if (typeof body?.enabled === "boolean") markRebindWindow();'));
-  check('H the gate only auto-focuses on non-phone layouts', client.includes('if (!mobilePortrait) input.focus();'));
-  check('H the keyboard guard shares the composer predicate', client.includes('if (active && isComposerField(this) && !composerIsWarm()) return;') && client.includes('if (!isComposerField(t)) return; // our own inputs keep their Enter'));
-  check('H the obsolete TEXTAREA/INPUT composer test is gone', !client.includes('closest(\'[class$="_composerSeat"]\') !== null && Date.now() - lastComposerTap'));
+  check('H the gate only auto-focuses away from touch devices', client.includes('const coarsePointer = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;') && client.includes('if (!coarsePointer) input.focus();'));
+  // 1.7.0 — the old portrait-phone adaptation (touch CSS, whale button, swipe /
+  // long-press navigation, Enter-to-newline rewrite, focus guard) is gone: DSH
+  // 0.2.2 ships its own narrow layout, so the plugin no longer patches it.
+  check('H no mobile layout adaptation is injected', !client.includes('mobileAdapt') && !client.includes('dsh-lan-portrait') && !client.includes('dshLanWhale') && !client.includes('__dshLanAdapt'));
+  check('H no touch-only keyboard/sidebar handlers remain', !client.includes('onKeydownCapture') && !client.includes('isComposerField') && !client.includes('swipeTouch') && !client.includes('longPress'));
+  check('H the layout service left the inject lists', !client.includes('"layout"') && !(pkg.dsh?.client?.inject ?? []).includes('@deepseek-ai/dsh-client-ui-layout'));
   // 1.4.6 — the "applying…" line must read as progress (green), not as the
   // muted status grey or the red error tone.
   check('H the applying line is rendered with the progress class', client.includes('className: c.pending, children: t("status.applying")'));
   check('H the progress class uses the official success token', /\.dshLan_pending\{color:var\(--dsw-alias-state-success-primary/.test(client));
   check('H the progress class is not the error class', !/\.dshLan_pending\{[^}]*state-error/.test(client));
-  // v85 — the whale is the title row's FIRST flex child, so the official
-  // `_titleCluster{flex:1}` centres the session title between it and the
-  // official right-sidebar control at the far end. Same 28px ghost button.
-  check('H the whale is seated as the title row\'s first child', client.includes('function seatWhale()') && client.includes('row.insertBefore(whaleEl, row.firstChild)'));
-  check('H the title row carries the seat marker', client.includes('row.setAttribute("data-dsh-lan-whale", "1")'));
-  check('H the title wrapper takes the free space', client.includes('[data-dsh-lan-whale=\\"1\\"] > :has(> [class$=\\"_titleCluster\\"]){flex:1 1 auto !important;min-width:0}'));
-  check('H the title cluster content is centred', client.includes('[data-dsh-lan-whale=\\"1\\"] [class$=\\"_titleCluster\\"]{justify-content:center}'));
-  // The whale's id ends in "Whale", so `[class$="_titleRow"]` matches the BUTTON
-  // too — every scoped rule must key off the marker attribute instead.
-  check('H no whale rule is scoped by the title row class', !/\[class\$=\\"_titleRow\\"\]\[data-dsh-lan-whale\]/.test(client) && !/\[class\$=\\"_titleRow\\"\] \[class\$=\\"_headerCorner\\"\]/.test(client));
-  // Double-escaped quotes compile to a bogus attribute value that matches
-  // nothing — that silently disabled the centring rule once already.
-  check('H the marker rules are not double-escaped', !client.includes('data-dsh-lan-whale=\\\\\\"1\\\\\\"'));
-  check('H the whale rule no longer carries the corner ordering', !/#dshLanWhale\{order:0/.test(client) && !client.includes('> [data-slot$=\\\"header.corner\\\"]{order:1}'));
-  // Property order inside the rule is not significant, so check each one.
-  const whaleRule = /#dshLanWhale\{[^}]*\}/.exec(client)?.[0] ?? '';
-  check('H the whale is glyph-only (no background, border or shadow)', whaleRule.includes('background:0 0') && whaleRule.includes('border:none') && whaleRule.includes('box-shadow:none'), whaleRule.slice(0, 80));
-  check('H the whale matches the official 28px control', whaleRule.includes('width:28px') && whaleRule.includes('height:28px'), whaleRule.slice(0, 80));
-  check('H the floating whale and its drag persistence are gone', !client.includes("dsh-lan-whale-pos") && !client.includes("function applyWhalePos") && !client.includes("whaleSuppressClick"));
-  check('H the floating placement and the title reserve are gone', !client.includes("#dshLanWhale{position:fixed") && !client.includes("dsh-lan-rail-hidden [class$=\\\"_titleRow\\\"]{padding-left"));
-  // v1.5.0 — the LAN door is the plugin's own proxy, gated by makeLanAdmit().
+  // 1.5.0 — the LAN door is the plugin's own proxy, gated by makeLanAdmit().
   // Locked here because the opt-in test/lan-proxy-e2e.mjs is what FOUND the
   // missing token carve-out (its last hop was refused on the LAN), and `npm
   // test` must catch that regression too.
@@ -570,7 +554,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the composition watchdog exists', server.includes('const watchdog = setInterval') && server.includes('the webServer service disappeared'));
   check('H diag reports the composition state', server.includes('composition: webServerPort(ctx) > 0 ? "ok" : "dead"'));
   check('H the watchdog is cleared on dispose', server.includes('clearInterval(watchdog)'));
-  // 1.6.1 — the plugin targets exactly one DSH release (0.2.1-rc.5). The
+  // 1.7.0 — the plugin targets exactly one DSH release (0.2.2-rc.1). The
   // manifest gate is `engines.dsh` (dsh-app-boot checks engines.dsh and, when
   // present, ignores peers entirely), so the pin has to live there.
   check('H the manifest pins exactly the supported DSH release', pkg.engines?.dsh === SUPPORTED_DSH, JSON.stringify(pkg.engines));
@@ -579,10 +563,6 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   // is dead code; every remote call goes through window.fetch (the fetch reroute).
   check('H the dead connection.api wrapper is gone', !client.includes('function wrapApi') && !client.includes('api.postJson') && !client.includes('__dshLanWrapped'));
   check('H the fetch reroute is the only transport hook', client.includes('function installLanFetchReroute') && client.includes('window.fetch = function (input, init)'));
-  // 1.6.0 — rc.3 dropped `_railFish`; the rail controls are `_panelRow`/`_iconButton`.
-  // The still-existing pre-rc.3 targets ( `_panelIcon` / `_newSession` ) must stay, so
-  // the only change is that the rule reaches the rail again instead of matching nothing.
-  check('H the rail touch rule targets rc.3 classes and keeps the surviving old ones', client.includes('[class$=\\"_collapsed\\"] [class$=\\"_panelRow\\"]') && client.includes('[class$=\\"_collapsed\\"] [class$=\\"_iconButton\\"]') && client.includes('[class$=\\"_panelIcon\\"]') && client.includes('[class$=\\"_newSession\\"]') && !client.includes('[class$=\\"_railFish\\"]'));
   // 1.6.0 — unknown `/dsh-lan/fs/*` paths answer JSON 404 instead of DSH's SPA
   // fallback (frontend-static claims the fallback seat since 0.2.1-rc.3).
   check('H the fs namespace has its own JSON 404', server.includes('path: "/dsh-lan/fs"') && server.includes('unknown dsh-lan fs endpoint'));
@@ -868,172 +848,6 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('K4 dispose still unregisters every route', registered > 0 && h.routes.size === 0, `before=${registered} after=${h.routes.size}`);
 }
 
-// ── L. mobile keyboard: real client code on a stubbed DOM ──────────────────
-// Covers BOTH halves of the composer story: Enter → newline (1.4.3) and "never
-// pop the input method unless the user tapped a text field" (1.4.4).
-{
-  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
-  const start = src.indexOf('const COMPOSER_WRAP =');
-  const stop = src.indexOf('document.addEventListener("keydown", onKeydownCapture, true);');
-  const slice = src.slice(start, stop);
-
-  const makeScope = () => {
-    const dispatched = [];
-    const timers = [];
-    const listeners = [];
-    class FakeEvent {
-      constructor(type, init = {}) {
-        Object.assign(this, init);
-        this.type = type;
-        this.defaultPrevented = false;
-        this.propagationStopped = false;
-      }
-      preventDefault() { this.defaultPrevented = true; }
-      stopPropagation() { this.propagationStopped = true; }
-    }
-    class FakeKeyboardEvent extends FakeEvent {}
-    class FakeInputEvent extends FakeEvent {}
-    class FakeElement {
-      constructor(tag = 'DIV', className = '', editable = false) {
-        this.tagName = tag;
-        this.className = className;
-        this.isContentEditable = editable;
-        this.contentEditableAttr = editable ? 'true' : null;
-        this.parent = null;
-        this.children = [];
-        this.dispatched = dispatched;
-        this.focusCalls = 0;
-        this.blurCalls = 0;
-      }
-      getAttribute(name) { return name === 'contenteditable' ? this.contentEditableAttr : null; }
-      // Minimal matcher for the two selector shapes the plugin uses.
-      closest(selector) {
-        const matches = (el) => String(selector).split(',').some((raw) => {
-          const part = raw.trim();
-          const contains = /^\[class\*="(.*)"\]$/.exec(part);
-          if (contains !== null) return String(el.className).includes(contains[1]);
-          const endsWith = /^\[class\$="(.*)"\]$/.exec(part);
-          if (endsWith !== null) return String(el.className).endsWith(endsWith[1]);
-          return false;
-        });
-        for (let el = this; el !== null; el = el.parent) if (matches(el)) return el;
-        return null;
-      }
-      querySelectorAll() { return []; }
-      querySelector() { return null; }
-      dispatchEvent(event) { dispatched.push(event); return true; }
-      focus() { this.focusCalls += 1; }
-      blur() { this.blurCalls += 1; }
-    }
-    const api = new Function(
-      'active',
-      'document',
-      'window',
-      'KeyboardEvent',
-      'InputEvent',
-      'HTMLElement',
-      `${slice}\nreturn { onKeydownCapture, insertLineBreakComposer, composerStructure, isComposerField, markComposerWarm: warmComposer, isComposerWarm: composerIsWarm, getWarmAt: () => composerWarmAt, setWarmAt: (value) => { composerWarmAt = value; } };`,
-    )(
-      true,
-      { execCommand: () => true, addEventListener: (type, fn) => listeners.push({ type, fn }) },
-      { setTimeout: (fn) => { timers.push(fn); } },
-      FakeKeyboardEvent,
-      FakeInputEvent,
-      FakeElement,
-    );
-    const fire = (type, event) => {
-      for (const entry of listeners.filter((l) => l.type === type)) entry.fn(event);
-    };
-    // The composer: a Lexical contenteditable inside the official wrapper.
-    const wrapper = new FakeElement('DIV', 'uV2eYG_input', false);
-    const composer = new FakeElement('DIV', 'lexical', true);
-    composer.parent = wrapper;
-    const outside = new FakeElement('DIV', 'somewhere', false);
-    const ownInput = new FakeElement('INPUT', 'dshLan_input', false);
-    return { api, composer, outside, ownInput, dispatched, timers, listeners, fire, FakeKeyboardEvent };
-  };
-
-  const enter = (scope, target, init = {}) => {
-    const event = new scope.FakeKeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true, ...init });
-    event.target = target;
-    scope.api.onKeydownCapture(event);
-    return event;
-  };
-
-  // ── Enter = newline, never send ──────────────────────────────────────────
-  const plain = makeScope();
-  const plainEvent = enter(plain, plain.composer);
-  check('L plain Enter is swallowed', plainEvent.defaultPrevented === true && plainEvent.propagationStopped === true);
-  check('L plain Enter is re-issued as Shift+Enter', plain.dispatched.length === 1 && plain.dispatched[0].key === 'Enter' && plain.dispatched[0].shiftKey === true, JSON.stringify(plain.dispatched.map((e) => e.type + ':' + e.key + ':' + e.shiftKey)));
-  check('L the re-issued event is marked so it cannot loop', plain.dispatched[0].__dshLanLineBreak === true);
-
-  const composing = makeScope();
-  const composingEvent = enter(composing, composing.composer, { isComposing: true });
-  check('L Enter during IME composition is left alone', composingEvent.defaultPrevented === false && composing.dispatched.length === 0);
-  const imeKeyCode = makeScope();
-  const imeEvent = enter(imeKeyCode, imeKeyCode.composer, { keyCode: 229 });
-  check('L keyCode 229 (IME) is left alone', imeEvent.defaultPrevented === false && imeKeyCode.dispatched.length === 0);
-
-  const shifted = makeScope();
-  const shiftedEvent = enter(shifted, shifted.composer, { shiftKey: true });
-  check('L Shift+Enter keeps the app\'s own behaviour', shiftedEvent.defaultPrevented === false && shifted.dispatched.length === 0);
-  const outside = makeScope();
-  const outsideEvent = enter(outside, outside.outside);
-  check('L Enter outside the composer is untouched', outsideEvent.defaultPrevented === false && outside.dispatched.length === 0);
-  const own = makeScope();
-  const ownEvent = enter(own, own.ownInput);
-  check('L Enter in the plugin\'s own input keeps its normal behaviour', ownEvent.defaultPrevented === false && own.dispatched.length === 0);
-
-  const marked = makeScope();
-  const markedEvent = enter(marked, marked.composer, { __dshLanLineBreak: true });
-  check('L our own synthetic event is ignored', markedEvent.defaultPrevented === false && marked.dispatched.length === 0);
-
-  // If the app ignored the synthetic key, the fallbacks must still fire.
-  const fallback = makeScope();
-  enter(fallback, fallback.composer);
-  check('L a fallback is scheduled after the first attempt', fallback.timers.length === 1);
-  fallback.timers[0]();
-  check('L the beforeinput fallback carries insertLineBreak', fallback.dispatched.some((e) => e.inputType === 'insertLineBreak'), JSON.stringify(fallback.dispatched.map((e) => e.type + ':' + (e.inputType || e.key || ''))));
-  check('L a second fallback is scheduled in turn', fallback.timers.length === 2);
-  fallback.timers[1](); // legacy execCommand path — must not throw
-  check('L the legacy fallback is reached without throwing', true);
-
-  // ── the keyboard must stay down unless the user tapped a text field ──────
-  const cold = makeScope();
-  check('L the Lexical contenteditable counts as the composer field', cold.api.isComposerField(cold.composer) === true);
-  check('L a plain div is not a composer field', cold.api.isComposerField(cold.outside) === false);
-  check('L the plugin\'s own input is not a composer field', cold.api.isComposerField(cold.ownInput) === false);
-  cold.composer.focus();
-  check('L a programmatic composer focus is dropped while cold', cold.composer.focusCalls === 0, `calls=${cold.composer.focusCalls}`);
-  cold.fire('focusin', { target: cold.composer });
-  check('L a cold focusin on the composer is taken back', cold.composer.blurCalls === 1, `blur=${cold.composer.blurCalls}`);
-
-  const warm = makeScope();
-  warm.fire('pointerdown', { target: warm.composer });
-  check('L tapping the composer marks it warm', warm.api.isComposerWarm() === true);
-  warm.composer.focus();
-  check('L the composer may take focus right after a real tap', warm.composer.focusCalls === 1);
-  warm.fire('focusin', { target: warm.composer });
-  check('L a warm focusin is left alone', warm.composer.blurCalls === 0);
-  warm.ownInput.focus();
-  check('L focus on the plugin\'s own input is never blocked', warm.ownInput.focusCalls === 1);
-
-  const stale = makeScope();
-  stale.fire('pointerdown', { target: stale.outside });
-  check('L a tap outside the composer does not warm it', stale.api.getWarmAt() === 0 && stale.api.isComposerWarm() === false, `warmAt=${stale.api.getWarmAt()}`);
-  stale.composer.focus();
-  check('L focus stays blocked after an unrelated tap', stale.composer.focusCalls === 0);
-
-  // Warmth is a 3s window, not a latch: after it lapses, the same programmatic
-  // focus is dropped again (no need to sit through three real seconds).
-  const expired = makeScope();
-  expired.api.markComposerWarm();
-  expired.api.setWarmAt(Date.now() - 4000);
-  check('L warmth expires after ~3s', expired.api.isComposerWarm() === false);
-  expired.composer.focus();
-  check('L a focus after the warmth expired is dropped again', expired.composer.focusCalls === 0);
-}
-
 // ── M. locale strings: the escaped Chinese must decode to what was intended ─
 {
   const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
@@ -1097,7 +911,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 }
 
 // ── N2. authorizeIndex forwards DSH's `secure` flag (v1.6.0) ───────────────
-// DSH 0.2.1-rc.3 added a third parameter (still present in rc.5): the official
+// DSH 0.2.1 added a third parameter (still present in 0.2.2-rc.1): the official
 // callers pass `webServer.protocol === "https:"` and BrowserAuth uses it for the
 // session cookie's `Secure` attribute. Every delegation this plugin makes must
 // carry it through — dropping it silently downgrades a TLS deployment's cookie.

@@ -194,15 +194,14 @@ async function browserPhase({ localBase, lanBase, localCookie, lanCookie, chrome
 		const targetId = created.result?.targetId;
 		const session = (await send("Target.attachToTarget", { targetId, flatten: true })).result?.sessionId;
 		for (const domain of ["Page", "Runtime", "Network", "Log"]) await send(`${domain}.enable`, {}, session);
-		// The viewport matters: the plugin's touch adaptation collapses the sidebar
-		// on narrow portrait screens, which is EXACTLY where a phone sees "no
-		// conversations" if the rail cannot be reopened.
+		// The viewport matters: the official narrow layout turns the sidebar into
+		// a modal drawer below 768px, which is exactly where a phone user would
+		// otherwise report "no conversations".
 		await send("Emulation.setDeviceMetricsOverride", {
 			width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.mobile === true
 		}, session);
-		// A phone is not just a narrow window: `isMobilePortrait()` (and the whole
-		// touch adaptation) keys on `(pointer: coarse)`, which device metrics alone
-		// do NOT provide. Without this the probe silently tests a desktop.
+		// Touch emulation makes the probe match a real phone (`hover:none` /
+		// `pointer:coarse`) instead of just a narrow desktop window.
 		if (viewport.mobile === true) {
 			await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }, session);
 			await send("Emulation.setUserAgentOverride", {
@@ -225,7 +224,6 @@ async function browserPhase({ localBase, lanBase, localCookie, lanCookie, chrome
 				textLen: (document.body?.innerText ?? "").length,
 				head: (document.body?.innerText ?? "").slice(0, 90).replace(/\\s+/g, " "),
 				mentionsWorkspace: /dsh-LAN|github|deepseek-harness/.test(document.body?.innerText ?? ""),
-				hasWhale: document.querySelector("#dshLanWhale") !== null,
 				railCollapsed: document.querySelector('[class*="_frame"][data-sidebar-collapsed]') !== null,
 				sidebarWidth: Math.round(document.querySelector('[class*="_sidebarCol"]')?.getBoundingClientRect().width ?? -1),
 				hasGate: document.querySelector("#dshLanGate") !== null,
@@ -292,62 +290,8 @@ async function browserPhase({ localBase, lanBase, localCookie, lanCookie, chrome
 	const localSnapshot = await probe("local/desktop", localBase, localCookie, desktop);
 	const lanSnapshot = await probe("lan/desktop", lanBase, lanCookie, desktop);
 	const phoneSnapshot = await probe("lan/phone", lanBase, lanCookie, phone);
-	// The phone is where "I can open the page but see no conversations" happens:
-	// DSH collapses its sidebar to a 56px rail on a narrow screen, and the whale
-	// is the plugin's affordance for opening it. So: is the whale there, and does
-	// tapping it actually reveal the list?
-	if (process.env.DSH_E2E_PHONE_TAP === "1") {
-		const handle = await openPhoneTarget(lanBase, lanCookie, phone);
-		const before = await evaluate(handle, `JSON.stringify({
-			whale: document.querySelector("#dshLanWhale") !== null,
-			visible: (document.querySelector("#dshLanWhale")?.getBoundingClientRect().width ?? 0) > 0,
-			ourAttr: document.querySelector("[data-dsh-lan-whale]") !== null,
-			sidebar: Math.round(document.querySelector('[class*="_sidebarCol"]')?.getBoundingClientRect().width ?? -1),
-			rows: document.querySelectorAll('[class$="_sessionRow"]').length
-		})`);
-		log(`browser[phone-tap]: before=${before}`);
-		const box = await evaluate(handle, `(() => {
-			const el = document.querySelector("#dshLanWhale");
-			if (el === null) return null;
-			const r = el.getBoundingClientRect();
-			return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
-		})()`);
-		if (box !== null && box !== "null") {
-			const point = JSON.parse(box);
-			for (const type of ["mousePressed", "mouseReleased"]) {
-				await send("Input.dispatchMouseEvent", { type, x: point.x, y: point.y, button: "left", clickCount: 1 }, handle.sessionId);
-			}
-			await sleep(1500);
-		}
-		const after = await evaluate(handle, `JSON.stringify({
-			sidebar: Math.round(document.querySelector('[class*="_sidebarCol"]')?.getBoundingClientRect().width ?? -1),
-			rows: document.querySelectorAll('[class$="_sessionRow"]').length,
-			visibleText: (document.querySelector('[class*="_sidebarCol"]')?.innerText ?? "").slice(0, 70).replace(/\\s+/g, " ")
-		})`);
-		log(`browser[phone-tap]: after=${after}`);
-		await send("Target.closeTarget", { targetId: handle.targetId }).catch(() => {});
-	}
-	// Why is there no way back to the conversation list on a phone? Dump the
-	// affordances that could open the collapsed rail, and whether the session
-	// header (where 1.4.7 seats the whale) exists at all on this screen.
-	if (process.env.DSH_E2E_DOMDUMP === "1") {
-		await probe("lan/phone-dom", lanBase, lanCookie, phone, {
-			dumpOnly: true,
-			expression: `JSON.stringify({
-				whale: document.querySelector("#dshLanWhale") !== null,
-				titleRows: document.querySelectorAll('[class$="_titleRow"]').length,
-				headerSessionless: document.querySelector('[class$="_headerSessionless"]') !== null,
-				headerBlank: document.querySelector('[class$="_headerBlank"]') !== null,
-				railFish: document.querySelector('[class$="_railFish"]') !== null,
-				panelIcon: document.querySelector('[class$="_panelIcon"]') !== null,
-				newSession: document.querySelector('[class$="_newSession"]') !== null,
-				collapsedAttr: document.querySelector('[class*="_frame"]')?.getAttribute("data-sidebar-collapsed") ?? null,
-				ourAttr: document.querySelector('[data-dsh-lan-whale]') !== null,
-				railText: (document.querySelector('[class*="_sidebarCol"]')?.innerText ?? "").slice(0, 80).replace(/\\s+/g, " "),
-				railButtons: [...document.querySelectorAll('[class*="_sidebarCol"] button, [class*="_sidebarCol"] a')].slice(0, 8).map((el) => (el.className || el.id || el.tagName).toString().slice(0, 40))
-			})`
-		});
-	}
+	// The phone probe is informational: it now exercises the OFFICIAL narrow
+	// layout (drawer below 768px), since the plugin no longer injects mobile CSS.
 	const same = localSnapshot.textLen === lanSnapshot.textLen && localSnapshot.mentionsWorkspace === lanSnapshot.mentionsWorkspace;
 	console.log(`browser: local vs lan identical=${String(same)} (textLen ${String(localSnapshot.textLen)}/${String(lanSnapshot.textLen)}, workspaces visible ${String(localSnapshot.mentionsWorkspace)}/${String(lanSnapshot.mentionsWorkspace)})`);
 

@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Password-gated LAN access for the <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> Web GUI</b><br>
-  Full access over the LAN · plugin-owned reverse proxy · no password on the host · mobile touch adaptation
+  Full access over the LAN · plugin-owned reverse proxy · no password on the host · phones/tablets use the official narrow layout
 </p>
 
 <p align="center">
@@ -15,14 +15,14 @@
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-lan-tool?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-lan-tool?style=flat-square&amp;label=downloads&amp;color=2f6fed"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square"></a>
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.1-rc.5" src="https://img.shields.io/badge/DSH-0.2.1--rc.5-4c8dff?style=flat-square"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.2-rc.1" src="https://img.shields.io/badge/DSH-0.2.2--rc.1-4c8dff?style=flat-square"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/MrMu666/dsh-lan-tool?style=flat-square&amp;label=release&amp;color=8957e5"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/MrMu666/dsh-lan-tool?style=flat-square&amp;label=stars&amp;color=e3b341"></a>
 </p>
 
 ---
 
-> ⚠️ **Version requirement (deliberately pinned since 1.6.0): `1.6.1` supports `@deepseek-ai/dsh` `0.2.1-rc.5` only (desktop 0.2.1-rc.5).** `engines.dsh` names exactly that release: installing or enabling the plugin on any other DSH version is refused as `incompatible-version` — deliberately, because the plugin rewrites internal `connection`/`webServer` behaviour and promises no cross-version compatibility. Users still on 0.2.1-rc.3 should stay on `dsh-lan-tool@1.6.0`; after the next DSH upgrade, wait for the matching plugin release.
+> ⚠️ **Version requirement (deliberately pinned since 1.6.0): `1.7.0` supports `@deepseek-ai/dsh` `0.2.2-rc.1` only (desktop 0.2.2-rc.1).** `engines.dsh` names exactly that release: installing or enabling the plugin on any other DSH version is refused as `incompatible-version` — deliberately, because the plugin rewrites internal `connection`/`webServer` behaviour and promises no cross-version compatibility. Users still on 0.2.1-rc.5 should stay on `dsh-lan-tool@1.6.1`; after the next DSH upgrade, wait for the matching plugin release.
 >
 > 🔧 **1.5.0 changed how LAN access is implemented (read this before upgrading)**: since 0.2.1 DSH refuses to bind a wildcard address (`0.0.0.0`), while the desktop shell requires DSH itself to stay on `127.0.0.1`. So the plugin **no longer touches any DSH binding**: DSH keeps its official loopback-only listener and **the plugin's own built-in reverse proxy** serves your machine's LAN addresses, **reusing the same port number**. Your LAN URL and workflow are unchanged — but **the override older versions left in the profile patch makes 0.2.1 refuse to start**, so read the [Upgrading](#upgrading-14x--150important) section first.
 
@@ -46,8 +46,6 @@ Once installed, flip "LAN access" on in Settings and the GUI becomes reachable f
 
 ![LAN password settings](docs/局域网口令设置.png)
 
-<img src="docs/手机端展示.png" alt="Mobile UI" width="50%">
-
 </div>
 
 ## ⚠️ Security notes
@@ -67,16 +65,11 @@ DSH deliberately withholds the settings scope from non-loopback browsers (`persi
 | Settings / permission presets / credentials / preset management pages | ❌ host-only (change them on the host machine) |
 | Workspace directory picker | ✅ the plugin's own dialog (drive dropdown, path jump) |
 
-## Mobile (portrait phones/tablets)
+## Mobile (phones/tablets)
 
-- Mobile **reuses the official desktop UI**: when a phone opens `http://<host-ip>:<port>` in portrait, the plugin injects a touch adaptation over the official interface (compact sidebar rail, ≥44px touch targets, 16px input font to prevent iOS focus zoom, safe-area padding); landscape/wide viewports revert automatically.
-- Every available capability is identical to desktop (see the table above): sessions/workspaces/history/live chat/model & mode switching/todo list/approvals & questions/permission switching, all synced with the host in real time.
-
-### Mobile interaction details
-
-- **Sidebar**: hidden while collapsed — the **whale button** at the top-left of the header is the entry point (fixed in the title row; it no longer drags). Tapping a session row, tapping anywhere else, or **swiping left** collapses it; in the conversation view **swiping right** expands the sidebar directly.
-- **Keyboard**: the input method appears **only when you tap a text field** — tapping the whale, a session row, toggling the sidebar or closing a dialog no longer pops it (and it is never taken away while you are typing); **Enter inserts a newline instead of sending** (sending goes through the send button; Enter while an IME candidate list is open still commits the candidate).
-- **UI details**: lingering official Tooltip bubbles are hidden; the `ask_user_question` card is fully adapted to narrow screens (42px option touch targets); the permission/model two-line layout and the bottom stats bar stay aligned with the composer.
+- Mobile **uses the official DSH UI directly**: since 0.2.2 the official frontend ships its own narrow layout (sidebar becomes a modal drawer below 768px, auto-collapses below 1024px, foldable posture, soft-keyboard and touch menus are adapted), so this plugin **no longer injects any mobile layout or touch patches**.
+- Open `http://<host-ip>:<port>` on a phone, enter the password, and you are in; every capability is identical to desktop (see the table above).
+- Input behaviour follows the official settings (Enter sends and Shift+Enter inserts a newline by default; configurable on the host).
 - **No password-page flicker**: if the browser cannot keep the login credential (e.g. the page is embedded in a cross-site iframe/WebView, where a `SameSite=Strict` cookie is dropped), the password page stops auto-redirecting after 2 hops and explains the problem instead of looping forever.
 
 ## Installation
@@ -87,7 +80,7 @@ Open the DSH sidebar **Plugins** page and install the package name **`dsh-lan-to
 
 > ⚠️ **After installing (or updating) the plugin, fully quit and reopen the desktop app once.** The plugin's node half (the password gate, the switch and every `/dsh-lan/*` route) is imported once per app run: **reinstalling or upgrading inside a running app leaves the node half on the old code**, while the browser half does hot-reload — a mixed pair. Since 1.4.2 the client reports that mismatch in the settings card and the console (in older versions it showed up as an unexplained password page).
 >
-> ⚠️ **A brand-new release may not install (pnpm's minimum release age)**: pnpm refuses packages published too recently, and the plugin manager only exempts the versions it has actually installed before — so typing the package name can silently resolve to the **previous** version (the new features and fixes never appear). Ask for the version explicitly (e.g. `dsh-lan-tool@1.6.1`), or add it to `minimumReleaseAgeExclude` in `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` first.
+> ⚠️ **A brand-new release may not install (pnpm's minimum release age)**: pnpm refuses packages published too recently, and the plugin manager only exempts the versions it has actually installed before — so typing the package name can silently resolve to the **previous** version (the new features and fixes never appear). Ask for the version explicitly (e.g. `dsh-lan-tool@1.7.0`), or add it to `minimumReleaseAgeExclude` in `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` first.
 >
 > This requires the package to be published on npm. If it is not published yet (or you want to install this local checkout), use option 2.
 
@@ -125,7 +118,7 @@ Quit the desktop app before running the CLI (`dsh-desktop-host` says so in its m
 >
 > Delete those two lines and save — DSH hot-reloads, and **a page refresh** brings the card back. (The same failure shows up as: no card in Settings, `http://127.0.0.1:<port>/dsh-lan/status` answering 404, and unreachable LAN URLs.)
 
-> ⚠️ **Moved out of the enabled list after a DSH upgrade?** The profile may keep `dsh-lan-tool` only in `dependencies` while `dsh.profile.bundles` no longer lists it (the same symptoms: no card in Settings, `/dsh-lan/status` answering 404). **Updating an existing dependency does not re-add it to the bundles.** After installing `dsh-lan-tool@1.6.1`, re-enable it on the Plugins page, then fully quit and reopen the desktop app. If there is no enable control, quit DSH and append `"dsh-lan-tool"` to `dsh.profile.bundles` in `profiles/<profile>/package.json`, then start it again.
+> ⚠️ **Moved out of the enabled list after a DSH upgrade?** The profile may keep `dsh-lan-tool` only in `dependencies` while `dsh.profile.bundles` no longer lists it (the same symptoms: no card in Settings, `/dsh-lan/status` answering 404). **Updating an existing dependency does not re-add it to the bundles.** After installing `dsh-lan-tool@1.7.0`, re-enable it on the Plugins page, then fully quit and reopen the desktop app. If there is no enable control, quit DSH and append `"dsh-lan-tool"` to `dsh.profile.bundles` in `profiles/<profile>/package.json`, then start it again.
 
 ### Firewall notes
 
@@ -206,7 +199,7 @@ A single DSH service process holds all state: sessions (jsonl persistence + in-m
 
 ## Credits
 
-Early mobile work referenced [dsh-remote-web-ui from dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui) (standalone lightweight remote UI + token gate); since v48 mobile reuses the official desktop UI with an injected portrait adaptation, keeping the same password model.
+Early mobile work referenced [dsh-remote-web-ui from dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui) (standalone lightweight remote UI + token gate); since v48 it reuses the official interface directly, and as of 1.7.0 the official 0.2.2 narrow layout replaces the plugin's portrait adaptation, keeping the same password model.
 
 ## License
 

@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.6.1 ↔ DeepSeek Harness 桌面版 0.2.1-rc.5**（版本号见 `resources/runtime/primary-runtime/runtime.json` 的 `desktopVersion`）。本文件的运行时事实均已在 0.2.1-rc.5 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.1-rc.2 → 0.2.1-rc.3 的差异见 §7 的 1.6.0 条；0.2.1-rc.3 → 0.2.1-rc.5 只改了聊天思考展示/标签 tooltip 等无关契约，见 §7 的 1.6.1 条。**
+当前基线：**dsh-lan-tool 1.7.0 ↔ DeepSeek Harness 桌面版 0.2.2-rc.1**（`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-09 实测该文件仍写 rc.5，而 asar 已是 0.2.2-rc.1）。本文件的运行时事实均已在 0.2.2-rc.1 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.1-rc.5 → 0.2.2-rc.1 的变更（官方窄屏布局 + 插件删除移动端适配）见 §7 的 1.7.0 条。**
 
 ---
 
@@ -15,7 +15,7 @@ package.json      name=dsh-lan-tool；dsh.bundle.patch / dsh.compatibility / dsh
 cordis.patch.yml  bundle 补丁：只有一条 insert 行，**故意不写 webserver 覆盖**
 lib/index.js      node 半边（host 平面）：状态文件、防火墙、口令门、/lanapi、/dsh-lan/*、反代的装配与门禁
 lib/lan-proxy.js  局域网反向代理（v1.5.0 起"局域网访问"的实现本体）：按接口地址监听 + HTTP/WS 反代
-lib/client.js     浏览器半边：登录门、移动端触控适配、设置页「局域网访问」卡片、侧栏锁定按钮、工作区目录选择器（影子）
+lib/client.js     浏览器半边：登录门、设置页「局域网访问」卡片、侧栏锁定按钮、工作区目录选择器（影子）
 lib/landing.html  门后落地页（口令 → /dsh-lan/unlock → /dsh-lan/mint → 干净 /）
 LICENSE           MIT 许可证（Copyright © 2026 MrMu666）
 README.md / README.en.md   面向用户；**不放更新记录**
@@ -63,11 +63,11 @@ test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会�
 
 ### 2.1 本机（作者机）开发循环
 
-本机状态：桌面版 **0.2.1-rc.5**，`DSH_HOME=C:\Users\MyBook\.dsh`，活动 profile = `desktop`（`profiles/` 下只有它）。**端口不再是 19387**：0.2.1 的桌面启动器传 `--port 0`（由 OS 分配），所以每次启动的端口都不同 —— 要连它请从窗口标题、日志或 `/dsh-lan/status` 的 `port` 取当前值（本文档里出现 `19387` 的地方都是离线自测的固定桩端口，不是线上值）。
+本机状态：桌面版 **0.2.2-rc.1**（2026-11-04 的 nightly 更新；`~/.dsh/dsh-runtimes/.../runtime.json` 仍写 rc.5，是旧缓存），`DSH_HOME=C:\Users\MyBook\.dsh`，活动 profile = `desktop`（`profiles/` 下只有它）。**端口不再是 19387**：0.2.1 的桌面启动器传 `--port 0`（由 OS 分配），所以每次启动的端口都不同 —— 要连它请从窗口标题、日志或 `/dsh-lan/status` 的 `port` 取当前值（本文档里出现 `19387` 的地方都是离线自测的固定桩端口，不是线上值）。
 
 **版本闸门（0.2.1 新增，先看这条再决定 `package.json` 怎么写）**：`dsh-app-boot` 的 `unmetRequirements()` 只校验**两处** —— 有 `engines.dsh` 时**只**看它（peer 全部忽略），否则逐个检查 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 `peerDependencies`；比较用 `semver.satisfies(..., { includePrerelease: true })`。不满足时 plugin-manager 会以 `incompatible-version` 拒绝安装/启用，要用 `dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <rt> --accept-risk` 授权。
 
-**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.6.1）写的是 `"engines": { "dsh": "0.2.1-rc.5" }`（**精确值，不是范围**）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
+**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.7.0）写的是 `"engines": { "dsh": "0.2.2-rc.1" }`（**精确值，不是范围**）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
 
 ```powershell
 $src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\desktop\node_modules\dsh-lan-tool'
@@ -93,7 +93,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 当前 `exports.inject`：
 
 ```js
-["slots", "locale", "connection", "workspaces", "uiWorkspace", "layout"]
+["slots", "locale", "connection", "workspaces", "uiWorkspace"]
 ```
 
 **不要**再往这里加 `settingsScope`（0.2.0 全树 0 处提供；加上就是整屏 Failed to load plugins）。
@@ -109,11 +109,11 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 | `uiWorkspace` | `@deepseek-ai/dsh-client-ui-workspace` | `listDirectory(path?, signal?)` / `createDirectory(path,name)` / `pickDirectory()` / 会话与工作区导航 |
 | `workspaces` | `@deepseek-ai/dsh-api-workspace-controller` | 只有 `create / rename / delete / insertBefore / archiveSession / insertSessionBefore` |
 | `slots` | `@deepseek-ai/dsh-client-ui-renderer` 的 SlotRegistry | 插槽注册/查询/订阅 |
-| `connection` | `@deepseek-ai/dsh-client-connection` | `connection/reset` 事件、`isLoopback`、`rpc`、`openWebSocket`（0.2.1-rc.3 起，rc.5 同：**没有** `connection.api` / `postJson`，见 §3.4） |
+| `connection` | `@deepseek-ai/dsh-client-connection` | `connection/reset` 事件、`isLoopback`、`rpc`、`openWebSocket`（0.2.1 起（含 0.2.2-rc.1）：**没有** `connection.api` / `postJson`，见 §3.4） |
 
 官方 `dsh-client-ui-directory-picker-browse` 注入的就是 `uiWorkspace`。**目录枚举/新建目录调用必须走 `uiWorkspace`**，`workspaces` 只能作为旧版回退（`pickerBrowse()` 就是按这个顺序取的）。
 
-**v1.5.8 的唯一例外（先读这条再改选择器）**：DSH 0.2.1 起 Host 必须绑回环，`dsh-host-directory-picker-auto` 因此**只组合 `native`**（`bindHost` 是回环 + win32/darwin ⇒ native；只有 `allowsRemoteAuthorities` 才 browse）。也就是说 `directoryPicker/list` 这条远端方法**根本不存在**，`uiWorkspace.listDirectory()` 永远答 `directory-picker/unavailable`——插件影子出来的 `directoryFlow` 对话框如果还调它，"新建工作区"就会报"无法打开文件夹 … directory browse failed"。所以对话框的**第一数据源是本插件自己的 `/dsh-lan/fs/list` 与 `/dsh-lan/fs/mkdir`**（node 半边用 `opendir`/`mkdirSync` 实现，返回与官方 `DirectoryListing` 相同的形状），拿不到（404 = 旧 node 半边）才回退 `uiWorkspace`。这两个路由和别的 LAN 端点同一道门：`lanFileAccess()` = 主机自己 / 口令持有者 / mint 出来的浏览器会话——代理对 `/dsh-lan/*` 是无条件放行的（落地页要用），所以门必须做在路由里。**命名空间里的未知子路径由 `/dsh-lan/fs` 前缀路由回 JSON 404（1.6.0）**：0.2.1-rc.3 起（rc.5 同）的 `frontend-static` 占了 webserver 的 **fallback 席位**，没被路由命中就回 SPA 的 `200 text/html`，客户端再也分不清"旧半边没有这个端点"和"这是一个页面"；`webServer.match()` 先查 exact 表再按最长前缀匹配，所以前缀不会盖住上面两条 exact 路由。
+**v1.5.8 的唯一例外（先读这条再改选择器）**：DSH 0.2.1 起 Host 必须绑回环，`dsh-host-directory-picker-auto` 因此**只组合 `native`**（`bindHost` 是回环 + win32/darwin ⇒ native；只有 `allowsRemoteAuthorities` 才 browse）。也就是说 `directoryPicker/list` 这条远端方法**根本不存在**，`uiWorkspace.listDirectory()` 永远答 `directory-picker/unavailable`——插件影子出来的 `directoryFlow` 对话框如果还调它，"新建工作区"就会报"无法打开文件夹 … directory browse failed"。所以对话框的**第一数据源是本插件自己的 `/dsh-lan/fs/list` 与 `/dsh-lan/fs/mkdir`**（node 半边用 `opendir`/`mkdirSync` 实现，返回与官方 `DirectoryListing` 相同的形状），拿不到（404 = 旧 node 半边）才回退 `uiWorkspace`。这两个路由和别的 LAN 端点同一道门：`lanFileAccess()` = 主机自己 / 口令持有者 / mint 出来的浏览器会话——代理对 `/dsh-lan/*` 是无条件放行的（落地页要用），所以门必须做在路由里。**命名空间里的未知子路径由 `/dsh-lan/fs` 前缀路由回 JSON 404（1.6.0）**：0.2.1 起（含 0.2.2-rc.1）的 `frontend-static` 占了 webserver 的 **fallback 席位**，没被路由命中就回 SPA 的 `200 text/html`，客户端再也分不清"旧半边没有这个端点"和"这是一个页面"；`webServer.match()` 先查 exact 表再按最长前缀匹配，所以前缀不会盖住上面两条 exact 路由。
 
 ### 3.3 插槽（slot）机制要点
 
@@ -126,10 +126,9 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 ### 3.4 `lib/client.js` 的结构性约束
 
 - 所有 `props.listDirectory(...)` 调用**必须**走 `callListDirectory()`：它把「方法不存在」这类同步 TypeError 转成 rejected promise，避免在 render 阶段（children 是急切构造的）炸掉整个 slot entry。加新调用点时照抄。
-- 移动端适配是**纯 DOM/CSS 注入**（`mobileAdapt`），只依赖官方 class 名的哈希后缀（`[class$="_frame"]` 这类选择器）。官方换 hash 前缀不影响它，但**改语义名会**；改动前先确认官方对应包的 class 名。
-- **输入框是 shell 自己的 Lexical 富文本编辑器，不是 textarea**（官方文档原话：Plain Enter 用配置的投递模式、Ctrl/Cmd+Enter 用互补模式、**Shift+Enter 插入换行**，Alt/双修饰键留给应用快捷键）。所以"让 Enter 换行"**不能**靠 `document.execCommand` 或改 value —— 1.4.2 及以前正是用 `execCommand("insertText","\n")`，Lexical 完全不理会，而事件又被 `preventDefault` 吞了，结果按键**毫无反应**。正确做法（1.4.3）：**吞掉普通 Enter，再对同一目标补发一个 `shiftKey: true` 的 keydown**，让 App 自己那条换行绑定生效；兜底依次是 `beforeinput{inputType:"insertLineBreak"}` 与 `execCommand("insertLineBreak")`，每次尝试后用「`<br>` 数 ×1000 + 子元素数」判断是否真插入了（防重复插入）。另外合成事件的 `defaultPrevented` 会被 App 的 gesture 层读取，所以吞原始事件时 `preventDefault()` 与 `stopPropagation()` 都要做；IME 组词中的 Enter（`isComposing` 或 `keyCode === 229`）必须放行，否则选不了词。
-- **"不要误弹输入法"必须和 Enter 用同一个判定**（1.4.4 的教训）：`isComposerField()` = 文本录入元素（contenteditable / TEXTAREA / INPUT）＋ 不在 `[class*="dshLan"]`（我们自己的 gate/picker 输入框）里 ＋ （是 contenteditable 或落在 `_composerSeat`/`_input`/`_composer` 包装内）。**≤1.4.3 的键盘守卫写的是 `TEXTAREA || INPUT` + `[class$="_composerSeat"]`，而输入框是 Lexical 的 contenteditable ⇒ 这个守卫从来没匹配过**，于是官方在挂载、切会话、以及"关掉一个吃键盘的浮层后把键盘交还 `SessionInput.focus()`"（官方文档原话）时反复把输入法弹出来——用户报的"点小鲸鱼 / 点会话行就弹键盘"就是这个。现在的规则：`pointerdown`/`keydown`/`input` 落在输入框上才把「3 秒内算正在输入」的窗口（`composerWarmAt`）刷新；窗口内允许聚焦（发送后光标回位、键盘不被抢走），窗口外一律拒绝——既拦 `HTMLElement.prototype.focus`（在 factory 顶层安装，早于 React 挂载），也用 `focusin` 兜底（覆盖"在我们 patch 之前就抓走了 `focus()` 引用"的代码、以及任何绕过 prototype 的聚焦）。另外**口令门在手机上不再自动聚焦**（`if (!mobilePortrait) input.focus();`，桌面保留），否则 gate 每次重挂都会弹一次键盘。
-- `installLanFetchReroute()` 包了全局 `window.fetch`（`lanFetchWrapped` 幂等标记），它是**唯一**的传输钩子：0.2.1-rc.3 起（rc.5 同）的 connection handle 是 `{ interactions, openWebSocket, isLoopback, generation, state, rpc, reconnect, registerGenerationSource, start }`，**没有 `api`、也没有 `postJson`**（1.6.0 删掉了包 `connection.api.postJson` 的 `wrapApi`——它只会静默 no-op，留着是误导）。所有远端调用（含官方生成的命名空间）都走 `window.fetch`，所以这一层就够；新增网络调用不要绕过 `clientIsLocal()` 判断（主机自己必须走原生路径，见 §3.6）。
+- **移动端布局适配已整体删除（1.7.0）**：官方 0.2.2 自带窄屏布局（<768px 模态抽屉、<1024px 自动折叠、折叠屏 `device-posture`、软键盘与 `visualViewport` 处理），插件不再注入触控 CSS、鲸鱼按钮、滑动/长按手势、Enter→换行或焦点守卫。**不要**把这些加回来；手机端的问题先确认是不是官方布局本身。唯一的移动相关代码是口令门在 `pointer: coarse` 下不自动聚焦（见 §3.6）。
+- 输入框仍是 shell 的 Lexical contenteditable，但按键/焦点行为完全归官方（Plain Enter 发送、Shift+Enter 换行、IME 组词 Enter 上屏）；插件既不 patch `keydown` 也不 patch `HTMLElement.prototype.focus`。
+- `installLanFetchReroute()` 包了全局 `window.fetch`（`lanFetchWrapped` 幂等标记），它是**唯一**的传输钩子：0.2.1 起（含 0.2.2-rc.1）的 connection handle 是 `{ interactions, openWebSocket, isLoopback, generation, state, rpc, reconnect, registerGenerationSource, start }`，**没有 `api`、也没有 `postJson`**（1.6.0 删掉了包 `connection.api.postJson` 的 `wrapApi`——它只会静默 no-op，留着是误导）。所有远端调用（含官方生成的命名空间）都走 `window.fetch`，所以这一层就够；新增网络调用不要绕过 `clientIsLocal()` 判断（主机自己必须走原生路径，见 §3.6）。
 - 局域网浏览器上**官方设置栈不可用是有意为之**：`dsh-client-ui-settings` 的 `persistence` 在 `apply()` 里按 `ctx.remote.$host.isLoopback` 取一次性常量，多个对象在**构造期**就据此决定是否 `subscribe`/`derive`，而 `dsh-client-locale` / `dsh-client-ui-chat` 的 README 明说这是 deliberate。**不要**试图"翻开关"（1.3.x 的 `lanHostMode()` 就是这么干的，已删）；卡片文案已改为"设置项请在主机上修改"。
 
 ### 3.5 开关 / 绑定 / 补丁的硬约束（最容易写错的一节）
@@ -169,7 +168,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - **版本握手**：`/dsh-lan/status` 报 `version`，客户端请求带 `x-dsh-lan-client`；不一致说明"装了没重启"（node 半边没换代码），客户端在设置卡片与控制台写明、服务端 log 一行。
 - 口令门拒绝时会打一行去重日志 `password gate: … — peer=… is not an address of this machine (host=…)`：万一主机又被挡住，这行日志直接指出被判成"非本机"的 peer/host（1.4.0 时这种事故在日志里是完全静默的）。
 - **唯一闸门**是 `connection.requestRejection(request)`（`@deepseek-ai/dsh-client-connection/lib/index.js`：Host/Origin 围栏 + 浏览器会话），`admit()` 调它，RPC 路由与 fetch/WS 处理器都走 `admit` ⇒ 直接替换实例方法即可覆盖全部入口。
-- `browserAuth.authorizeIndex(req, res, secure = false)` 只认 `GET /` 上的 token；兑换成功写 authority 绑定的 `HttpOnly; SameSite=Strict` cookie 并 303 到 `./`。**0.2.1-rc.3 起（rc.5 同）第 3 个参数是官方的**（`HostConnectionService.authorizeIndex` 传 `webServer.protocol === "https:"`，BrowserAuth 用它决定 cookie 的 `Secure`）：我们的 `patchedAuthorize` 必须原样转发它（1.6.0 起已转发；1.5.9 只传两个参数，HTTP 部署无影响、TLS 部署会把 cookie 降级成非 Secure）。`connection.authenticatedUrl(base)` 给 URL 挂进程 token（token 是**进程内存**随机值，磁盘上不存在）。
+- `browserAuth.authorizeIndex(req, res, secure = false)` 只认 `GET /` 上的 token；兑换成功写 authority 绑定的 `HttpOnly; SameSite=Strict` cookie 并 303 到 `./`。**0.2.1 起（含 0.2.2-rc.1）第 3 个参数是官方的**（`HostConnectionService.authorizeIndex` 传 `webServer.protocol === "https:"`，BrowserAuth 用它决定 cookie 的 `Secure`）：我们的 `patchedAuthorize` 必须原样转发它（1.6.0 起已转发；1.5.9 只传两个参数，HTTP 部署无影响、TLS 部署会把 cookie 降级成非 Secure）。`connection.authenticatedUrl(base)` 给 URL 挂进程 token（token 是**进程内存**随机值，磁盘上不存在）。
 - **桌面壳的启动握手绝不能被 `patchedAuthorize` 短路（1.4.5 的教训，改 `patchedAuthorize` 前必读）**：桌面端启动时 `main.js` 的 `authenticateWebHost()` 会 `fetch(ready.url, { redirect:"manual" })` 并**要求 `status === 303 && set-cookie !== null`**，否则抛 `Error: Desktop Host authentication failed`，主进程弹出"DeepSeek Harness is unavailable"对话框（第三个按钮是"禁用第三方插件，备份 profile 补丁并重启"）。而 1.4.1–1.4.4 的 `patchedAuthorize` 写的是 `if (local) return true` —— **主机自己一律直接放行**，于是壳拿到的是 `200 + text/html`（走 `frontend-static` 的 `serveStatic()` 直接下发 SPA），启动必失败。触发条件是"**局域网开**的时候重启桌面端"：`boundToAllInterfaces(ctx)` 为真才装这道闸，而这个覆盖块**持久化在 profile 补丁里**，所以**每一次**启动都会失败，用户只能点那个"禁用第三方插件"按钮（它会把 LAN 块一起删掉）才能进应用 —— 进去后再开 LAN，下次启动又坏，表现为"反复发作"。**现行契约（1.4.5）**：本机分支里，`GET /` 且 `searchParams.has("token")` 时**必须委派** `origAuthorizeIndex.call(browserAuth, req, res)`，让它自己判 `303`/`401`；其余本机请求仍 `return true`。这个让渡是安全的：带进程 token **就等于**是主机（token 只在进程内存里），伪造 token 由官方 `tokenMatches()` 直接 401。**口令闸 `requestRejection` 一行都不用动**（它对本机从来都是 `return undefined`）。回归断言见 `test/loopback-gate.test.mjs` N 段。
 - **`ensureFencePatched` 的重入护栏必须同时比 connection 与 browserAuth**（1.4.5）：只比 `wrap.connection === connection` 时，若将来出现"同一个 connection 换了一个已打补丁的 browserAuth"，`origAuthorizeIndex` 会捕获到 `patchedAuthorize` 自己，形成嵌套委派（先 303 再被 `serveStatic` 写 200）——正是上面那个崩溃以更难查的形态复现。当前 cordis 把二者成对重建，所以到不了，但护栏要挡住这个方向。
 - 官方围栏 `isTrustedApiRequest` 只在 loopback 或命中 `trustedHosts` 时放行，而 `trustedHosts` 是**启动时采样一次**的 LAN 字面量（换 IP/后开开关都可能过期）；本插件用口令门在 `requestRejection` 层放行，因此不依赖它（这也是 `/lanapi` 至今保留的原因之一）。
@@ -193,7 +192,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**315 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端键盘**（用打桩 DOM 跑真实的捕获处理器：普通 Enter 被吞并补发 Shift+Enter、IME 组词与 keyCode 229 放行、Shift+Enter 与插件自己的输入框不动、合成事件不自我循环、两级兜底按序触发；以及"冷启动时的程序化聚焦被丢弃 / 点过输入框后放行 / 3 秒后重新变冷 / focusin 兜底会 blur / 我们自己的输入框永不被拦"）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/mobileAdapt 之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**278 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -255,6 +254,8 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - 手工编辑 profile 补丁里的受管块，或手工恢复安装脚本那套"正则改 YAML"（补丁里现在**不该**有任何本插件的块；`clearLanBlock()` 只负责清理历史遗留）。
 - 试图在局域网页面上"解锁"官方设置栈（`settingsScope` 已不存在，见 §3.4）。
 - **擅自改作者机已安装的插件或替他安装/升级**：作者只授权改仓库代码与 profile 的 `minimumReleaseAgeExclude`；升级由他自己做。要在真机验证就用 §4.4 的隔离方式（junction 到仓库的临时 profile）。
+- **在官方已适配移动端后重新注入移动端布局/触控补丁**（0.2.2 起官方自带 <768px 抽屉、折叠屏姿态、软键盘处理；1.7.0 已整体删除 `mobileAdapt`，不要再恢复鲸鱼按钮、滑动开合、长按菜单或 Enter→换行）。
+- **让插件依赖 `layout` 服务**（它只为移动端侧栏开关存在；1.7.0 起已从 `exports.inject` 与 `dsh.client.inject` 两处移除）。
 - 在 README 里堆更新记录或维护须知（约定：README 只作为用户文档；变更与踩坑写进本文件第 7 节或 commit）。
 
 ---
@@ -321,6 +322,16 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.7.0 — 对齐 DSH 0.2.2-rc.1；删除插件自带的移动端界面适配
+
+- **审查结论（0.2.1-rc.5 → 0.2.2-rc.1）**：0.2.2 系列首个 RC。产品改动很多（引用插入、历史复制 Markdown、统一右键/键盘菜单、插件管理更新与回滚、WebSocket 压缩默认开、静态资源 ETag、Cordis 4.1.0 等），对本插件最关键的是**官方前端自带手机/平板适配**：`ui-layout` 新增 <768px 模态抽屉（不占列、点导航自动关、header 保留重开入口）、<1024px 自动折叠、折叠屏 `device-posture`、键盘弹起时 frame 保持布局视口高度、浮层/插入点按 `visualViewport` 定位、明确不添加 synthetic safe-area。
+- **删除移动端适配**：整段 `mobileAdapt` IIFE（约 830 行）移除——触控 CSS（44px 目标、16px 输入、safe-area、100dvh、设置页纵向布局等）、小鲸鱼按钮与标题段落座、`_header`/`_tabs` 重排、滑动开合侧栏、长按会话行菜单、点击自动折叠、Enter→换行、`isComposerField()` 焦点守卫，以及 `window.__dshLanAdapt`。`exports.inject` 与 `dsh.client.inject` 同步去掉 `layout` / `@deepseek-ai/dsh-client-ui-layout`。
+- **保留**：口令门（触屏设备不自动聚焦，改用 `matchMedia("(pointer: coarse)")`，不再依赖已删的 `isMobilePortrait`）、代理、防火墙、`/dsh-lan/*`、目录选择器、锁定按钮。移动端输入行为回归官方（Enter 发送 / Shift+Enter 换行，可在设置里改）。
+- **契约核对（0.2.2-rc.1 asar 实测）**：`dsh-app-boot.unmetRequirements()` 仍只认 `engines.dsh`；`webServer.register`（重复路由抛错）/match/fallback 未变；`frontend-static` 仍占 fallback 席位并新增 ETag/304；`connection.requestRejection`/`isTrusted`/`admit`/`browserPeer`/`createSharedFetchHandler(..., peer)`/`authorizeIndex(req,res,secure=false)`/`authenticatedUrl()` 未变；`slots` 的 priority/registrant/entriesOfSlot 与 `settings.general.item`/`sidebar.footer.action`/两个 `directoryFlow` 插槽仍在；`uiWorkspace` 服务仍在；桌面壳仍 `--host 127.0.0.1 --port 0`、SPA 仍 `dsh-app://app/`。WebSocket 压缩默认开启，对本插件反代透明（upgrade 原样隧道）。
+- **版本**：1.7.0 / `engines.dsh=0.2.2-rc.1` / `dsh.compatibility.dsh=0.2.2-rc.1` / `dshReleases` 只留该项；两处 `PLUGIN_VERSION`。
+- **验证**：`npm test` **278/278**（315 → 278，净 −37：删掉移动端键盘/鲸鱼/移动 CSS 断言，新增"移动端适配确实不存在"的静态断言）；e2e 的 whale/phone-tap 探针一并删除，手机视口探针保留（现在验的是官方窄屏布局）。
+- **注意**：官方 0.2.2 的窄屏布局只解决"界面能用"，手机访问**桌面版**仍需本插件/隧道（桌面启动器仍只绑 127.0.0.1；`dsh web` 可绑一个具体局域网 IP）。
 
 ### 1.6.1 — 对齐 DSH 0.2.1-rc.5（只改版本闸，功能不变）
 
