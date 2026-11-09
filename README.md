@@ -2,7 +2,7 @@
 
 <p align="center">
   <b><a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> Web GUI 的局域网访问插件</b><br>
-  带口令的全功能版 · 插件内置反向代理 · 主机免口令 · 手机/平板直接用官方窄屏界面
+  带口令的全功能版 · 插件内置反向代理 · 主机免口令 · 手机/平板直接用官方界面
 </p>
 
 <p align="center">
@@ -13,34 +13,16 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-lan-tool?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
-  <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-lan-tool?style=flat-square&amp;label=downloads&amp;color=2f6fed"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.2-rc.1" src="https://img.shields.io/badge/DSH-0.2.2--rc.1-4c8dff?style=flat-square"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/MrMu666/dsh-lan-tool?style=flat-square&amp;label=release&amp;color=8957e5"></a>
-  <a href="https://github.com/MrMu666/dsh-lan-tool/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/MrMu666/dsh-lan-tool?style=flat-square&amp;label=stars&amp;color=e3b341"></a>
 </p>
 
 ---
 
-> ⚠️ **版本要求（1.6.0 起刻意钉死）：`1.7.1` 仅支持 `@deepseek-ai/dsh` `0.2.2-rc.1`（桌面版 0.2.2-rc.1）**。`package.json` 的 `engines.dsh` 锁定该精确版本：在其它 DSH 版本上安装/启用会被判为 `incompatible-version` 而拒绝（这是有意为之——插件直接改写 `connection`、`webServer` 的内部行为，跨版本不做兼容承诺）。仍在使用 0.2.1-rc.5 的用户请继续用 `dsh-lan-tool@1.6.1`；DSH 再次升级后请等待对应版本的插件发布。
->
-> 🔧 **1.5.0 起换了实现方式（重要，升级必读）**：0.2.1 起 DSH 不再允许把监听地址绑到通配地址（`0.0.0.0`），而桌面端又要求 DSH 自己必须听 `127.0.0.1`，所以本插件**不再改动 DSH 的任何绑定**：它保持官方默认只听本机，由**插件自己内置的反向代理**在你机器的局域网地址上提供入口（**复用同一个端口号**）。升级后局域网地址与用法完全不变，但**旧版本留在 profile 补丁里的那段覆盖会让 0.2.1 直接起不来**——请先看下面的[「升级」](#升级140--150重要)一节。
+> ⚠️ **版本要求**：`1.7.1` 仅支持 DSH 桌面版 **`0.2.2-rc.1`**（`engines.dsh` 精确锁定，其它版本会被拒绝安装/启用）。旧版 DSH 请使用对应的旧版插件，见 [Releases](https://github.com/MrMu666/dsh-lan-tool/releases)。
 
-> 🚀 **配合 [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) 与 [dsh-app](https://github.com/MrMu666/dsh-app) 使用，体验感更好。**
-
-> 📦 **本包是标准 DSH 插件 bundle**（声明 `dsh.bundle.patch`），用官方插件机制安装，**没有安装脚本**；功能开关在**设置页**里，安装过程**不询问口令**。
-
-安装后，在设置页打开「局域网访问」开关即可让局域网设备访问（Windows 自动放行防火墙 Domain + Private；Linux 依次尝试 firewalld / ufw / iptables，无可用防火墙工具时视为无需放行）：
-
-- ✅ **装完默认关闭**：不写任何 `webserver` 覆盖，GUI 保持官方默认（只听 `127.0.0.1`，gzip 完整保留）
-- ✅ **开关即时生效**：开关打开/关闭的是**插件自己的局域网反向代理**（在本机的局域网地址上监听，转发到 DSH 的本机端口），**不改动 DSH 的绑定、无需重启**；关掉开关 = 立刻停止对外监听
-- ✅ **仍用同一个端口**：局域网地址就是 `http://<本机IP>:<DSH端口>`，和以前一样；代理会把 Host 原样转发，所以登录凭据与官方一致
-- ✅ **局域网设备先输口令才能看页面**：局域网上的设备（桌面或手机/平板）打开 `http://<本机IP>:<端口>` 都先显示口令页，输入口令后进入；地址栏**始终不出现 token**（插件在后台完成官方 token→cookie 兑换）
-- ✅ **本机永远不需要口令**：主机自己打开 GUI（桌面版、浏览器，无论用 `127.0.0.1`、`localhost`、`[::1]`、机器名还是本机局域网地址）**直接进入**，不显示口令页。判定依据是 **TCP 连接来源**（回环或本机自己的地址），与页面用的域名无关——所以桌面端不会被自己的口令门挡住（1.4.1 修的就是这个问题）。
-- ✅ **记住口令（本机）**：口令页勾选「记住口令」后保存在该设备浏览器 localStorage，下次打开免输；不勾选则只保存在当前标签页（sessionStorage），关闭即失效
-- ✅ 设置页（General）「局域网访问」卡片：开关 + 口令设置/清除 + 绑定/防火墙/口令状态显示
-- ✅ **未设口令时不会静默暴露**：开关会先要求设置口令，且若处于「已开但无口令」状态，卡片会明确提示（局域网设备无法进入）
-- ✅ **所有浏览器看到完全相同的对话过程**：单一服务进程，会话状态全部在服务端，事件流（WebSocket）向每个连接的浏览器推送相同更新
+让手机、平板或另一台电脑通过局域网打开同一份 DeepSeek Harness：**先输口令才能看页面**，主机自己打开**不需要口令**。
 
 <div align="center">
 
@@ -48,158 +30,51 @@
 
 </div>
 
-## ⚠️ 安全说明
+## 安装
 
-- 口令门是**服务端强制**的：来自其他设备的请求（即 TCP 来源不是主机自己——回环地址或本机任一网卡地址）必须携带口令（`x-dsh-lan-key` 请求头或会话 cookie），否则一律拒绝；特权方法（设置/权限/凭据等）同样只认这道门。**主机自己的请求一律放行**（任何域名/地址），这是刻意设计：桌面端必须始终可用。
-- **口令门就是本插件的全部安全边界**。没有口令 ⇒ 局域网完全不可用（不会退化成"无口令也能用"）。持有口令的人可以读写该 DSH 的全部数据，请只在可信网络启用，并设置足够复杂的口令。
-- **1.5.0 的局域网入口只监听本机当前的局域网接口地址，不使用通配地址**（DSH 上游正是因为"绑所有网卡会把 RCE 暴露到网络"才禁掉通配）。门禁由这个入口自己执行：DSH 只会看到来自本机回环的连接，因此**对外这一层完全由插件把守**——这也是"关掉开关就立即断开"的原因。
-- 仅限可信网络（家庭/办公室内网）使用。公共网络请关闭开关。
+1. 在 DSH 侧栏 **Plugins** 页输入包名 **`dsh-lan-tool`** 安装；
+2. **完全退出桌面版，再重新打开**（node 半边只在启动时载入）；
+3. 打开 设置 → General →「局域网访问」，**先设置访问口令**（至少 4 位），再打开开关。
 
-## 局域网能力范围（重要）
+> 刚发布的版本可能被 pnpm 的 24 小时窗口挡回旧版；此时在 Plugins 页显式写版本，例如 `dsh-lan-tool@1.7.1`。
+>
+> 也可以配合 [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) 与 [dsh-app](https://github.com/MrMu666/dsh-app) 使用。
 
-DSH 官方对**非本机浏览器**刻意不提供设置作用域（`dsh-client-ui-settings` 的 `persistence` 在页面加载时按 `isLoopback` 固定，且 `dsh-client-locale` / `dsh-client-ui-chat` 的文档都写明这是有意为之）。因此局域网设备上：
+## 使用
+
+- 开关打开后，设置卡片会列出可用的局域网地址；局域网设备打开 `http://<本机IP>:<端口>`，输入口令即可。
+- 端口由 DSH 每次启动时分配，**可能变化**。想固定：在卡片里填「局域网端口」（1024–65535）并点「应用端口」。
+- 手机/平板直接使用官方窄屏界面，无需额外设置。
+- Windows 首次开启可能弹一次防火墙询问，点「允许」即可；卡片会自动识别系统规则。
+
+## 局域网设备能做什么
 
 | 能力 | 局域网设备 |
 |---|---|
-| 聊天、切换模型与工作模式、工作区与会话、历史、任务、审批、终端 | ✅ 可用 |
-| 设置 / 权限预设 / 凭据 / 预设管理页面 | ❌ 只在主机上可用（请在主机上修改） |
-| 工作区目录选择 | ✅ 插件自带的目录选择器（含盘符下拉、路径跳转） |
+| 聊天、模型与工作模式切换、工作区/会话、历史、任务、审批、终端 | ✅ 可用 |
+| 设置 / 权限预设 / 凭据 / 预设管理页面 | ❌ 仅主机可用（请在主机上修改） |
+| 工作区目录选择 | ✅ 插件自带的目录选择器 |
 
-## 移动端（手机/平板）
+## 安全
 
-- 移动端**直接使用 DSH 官方界面**：0.2.2 起官方前端自带窄屏布局（<768px 侧栏变浮层抽屉、<1024px 自动折叠、折叠屏姿态、软键盘与触控菜单均已适配），本插件**不再注入任何移动端布局/触控补丁**。
-- 手机打开 `http://<本机IP>:<端口>`，输入口令即可进入；能力与桌面端相同（见上表）。
-- 输入行为以官方设置为准（默认 Enter 发送、Shift+Enter 换行，可在主机设置里调整）。
-- **口令页防抖**：若浏览器不保存登录凭据（例如把页面放进跨站 iframe/内嵌窗口，`SameSite=Strict` 的 Cookie 会被丢弃），口令页最多自动跳转 2 次即停下并给出提示，不会无限闪烁。
+- **口令门是唯一的安全边界**：局域网设备必须携带口令，主机自己的请求始终放行。
+- 持有口令的人可以读写该 DSH 的全部数据，请设置强口令，并**只在可信网络开启**；公共网络请关闭开关。
+- 插件只监听本机当前的局域网接口地址（不使用通配地址）；关闭开关会立即停止对外监听。
 
-## 安装
+## 常见问题
 
-### 方式 1：应用内 Plugins 页（推荐，一键）
-
-在 DSH 桌面版侧栏 **Plugins** 页输入包名 **`dsh-lan-tool`** 安装。装完后 `dsh.profile.bundles` 会自动登记该包。
-
-> ⚠️ **装完（或更新后）请完全退出桌面版再重新打开一次。** 插件的 node 半边（口令门、开关、`/dsh-lan/*` 路由都在这里）只在应用启动时载入一次；**同一个应用进程内重装/升级插件，node 半边仍是旧代码**（浏览器半边会热更新，于是出现"一半新一半旧"）。1.4.2 起客户端会把这种不一致直接写在设置卡片与控制台里（旧版表现为一个没人能解释的口令页）。
->
-> ⚠️ **刚发布的版本可能装不上（pnpm 的"发布年龄"策略）**：pnpm 默认不装太新的包，插件管理器只会给它**实际装到过的版本**豁免，于是你在 Plugins 页输入包名时可能被解析回**上一个版本**（表现：新版本的功能/修复没出现）。此时在 Plugins 页显式写版本（如 `dsh-lan-tool@1.7.1`），或把该版本加进 `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 再装。
->
-> 前提：该包已发布到 npm。若尚未发布（或你想装本地这份代码），用方式 2。
-
-### 方式 2：CLI（本地目录 / 路径 / tarball 都行）
-
-```bash
-# 本地开发目录（绝对路径）
-dsh plugin --profile desktop add D:\DeepSeek\dsh-LAN
-# 或 link: / file: / tarball / git 形式
-dsh plugin --profile desktop add link:D:\DeepSeek\dsh-LAN
-# 发布之后则可以直接用包名
-dsh plugin --profile desktop add dsh-lan-tool
-```
-
-CLI 路径需要**先退出桌面版**再执行（`dsh-desktop-host` 的提示文案如此；它实际只检查 profile 是否初始化过，但应用运行中改写 `node_modules` 在 Windows 上容易被占用）。
-
-### 安装后（两种方式相同）
-
-1. 打开 DSH → 设置 → General → 「局域网访问」；
-2. **先设置访问口令**（至少 4 位）；
-3. 再打开开关——插件会在本机的局域网地址上开启反向代理，几秒内卡片就会列出可用的局域网地址；
-4. 局域网设备打开卡片里显示的 `http://<本机IP>:<端口>`，输入口令进入。
-
-> **端口由 DSH 自己决定**（0.2.1 的桌面启动器传 `--port 0`，由系统分配，所以每次启动都可能不同；`dsh web` 默认 `3080`）。**以卡片里显示的地址为准。**
->
-> 📌 **想让局域网地址固定下来**：在卡片里填一个「局域网端口」（1024–65535）并点「应用端口」，留空则继续跟随 DSH。**固定的是插件自己的入口，不是 DSH 的端口**——DSH 那边不能安全地钉死（写 `webserver` 覆盖一旦端口被占会让整个应用起不来，而插件这个入口被占只是暂时没有局域网访问，不影响应用启动）。固定之后，已经打开的页面、书签与二维码在 DSH 重启后依然可用；不固定的话，**DSH 每次重启都会换端口，之前开着的局域网页面会一直尝试重连旧端口**（界面上表现为一直"重新连接中"、能看列表但对话加载不出来），刷新页面即可恢复。
-
-> ⚠️ **重装或升级后设置页里看不到卡片？** 多半是 profile 补丁里留着一条旧的禁用行（停用/卸载时 `dsh-plugin-manager` 会写它，而**重新安装不会自动清掉**；profile 补丁层优先级高于 bundle 层，于是它压过了新装的包）：
->
-> ```yaml
-> # %USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml 末尾
-> - id: dsh-lan-tool
->   disabled: true
-> ```
->
-> 删掉这两行保存即可——DSH 会热加载，**刷新页面**卡片就回来了（症状同时包括：设置页没有卡片、`http://127.0.0.1:<端口>/dsh-lan/status` 返回 404、局域网地址无法访问）。
-
-> ⚠️ **升级 DSH 后插件被移出启用列表？** profile 可能只在 `dependencies` 里保留 `dsh-lan-tool`，而 `dsh.profile.bundles` 中没有它（症状同样是设置页没有卡片、`/dsh-lan/status` 返回 404）。**只更新已有依赖不会把插件重新加入 bundles**；装好 `dsh-lan-tool@1.7.1` 后，请在 Plugins 页把它重新启用，然后完全退出并重启桌面版。若页面没有提供启用入口，退出 DSH 后在 `profiles/<profile>/package.json` 的 `dsh.profile.bundles` 末尾补 `"dsh-lan-tool"`，再启动。
-
-### 防火墙说明
-
-- **Windows**：自动维护 Windows Defender 防火墙放行规则 `dsh-lan-tool (auto)`（Domain + Private）。**未以管理员身份运行时，第一次开启会出现一次系统的「是否允许访问」弹窗**——点允许即可，Windows 会自己建一条放行规则；卡片会**自动**识别这条系统规则（几秒内把状态改成「防火墙已放行」，显示系统规则的名称），**不需要管理员权限、也不需要重启**。只有既没建成本插件的规则、系统里也找不到放行规则时，才会显示「防火墙未放行（需管理员权限）」。
-- **Linux**：自动检测并按 firewalld → ufw → iptables 的顺序维护放行规则；检测不到受支持的防火墙工具时，状态显示「防火墙未由插件管理」，此时端口通常本就无需放行。
-- **切换开关的几秒**：开关会开启/关闭插件的局域网监听，这期间请求可能短暂失败，卡片显示「正在生效…」并自动重试/刷新，**不会冒出红色错误**；状态文字里的规则名也是按 UTF-8 读取的，不会出现乱码。
-- 关闭「局域网访问」开关会**立即**停掉插件的局域网监听（DSH 自己始终只听本机），这是最根本的安全开关。
-- **插件只在本机当前的局域网接口地址上监听，不使用通配地址**：接口地址变化（换 Wi-Fi、VPN 上下线、DHCP 换址）时，插件每 10 秒复查一次并自动增删监听，卡片里的地址也跟着更新。
-
-## 升级（1.4.x → 1.5.0，重要）
-
-**如果你在「局域网访问」开着的时候把 DSH 升到了 0.2.1，DSH 会起不来**，弹出「DeepSeek Harness is unavailable」，日志（`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log`）里是类似这样一句：
-
-```
-webserver (required)
-  Error: host "0.0.0.0" is an unspecified (wildcard) address, which is not supported: …
-```
-
-**原因**：0.2.1 的 `webserver` 行不再接受通配监听地址（上游为缩小暴露面主动禁掉），而它是必需组件 ⇒ 配置校验失败 ⇒ 整个应用拒绝启动；而旧版本（≤1.4.7）的开关正是往 profile 补丁里写了一段 `host: '0.0.0.0'` 的覆盖，那段覆盖**不会因为升级而消失**，于是每次启动都失败。**这不是你的配置坏了，也不是 DSH 的 bug**；1.5.0 起插件已经彻底不再写这段覆盖。
-
-两条恢复路径，任选一条：
-
-**A. 用 DSH 自带按钮（最快）**：在启动失败对话框上点第三个按钮「**禁用第三方插件，备份 profile 补丁并重启**」。它会备份补丁、摘掉第三方 bundle，然后正常启动。进去之后**把本插件升级到 1.5.0 再重新启用**即可（1.5.0 会自动清理遗留的那段覆盖）。
-
-**B. 手工删掉那一段**：
-
-1. 完全退出 DSH；
-2. 打开 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`；
-3. 删掉从 `# --- dsh-lan-tool LAN block (managed - do not edit) ---` 到 `# --- end dsh-lan-tool LAN block ---` 的整段（含这两行；**不要**动文件里其它内容）；
-4. 保存后启动 DSH，再把插件升级到 1.5.0。
-
-> 升级到 1.5.0 之后，插件在激活时也会自动剥除任何遗留的受管块（包括上面那段）。但**已经被它卡住的机器里插件根本加载不到**，所以那种情况只能先用 A 或 B 救回来——这也是本节存在的原因。
->
-> ⚠️ **1.5.0 本身有一个缺陷，请直接用 1.5.1 或更新版本**：0.2.1 把 API 的放行判定挪到了 `connection.admit()` 里的信任漏斗（`isTrusted`），而 1.5.0 的口令闸仍只替换旧的 `requestRejection` ⇒ 局域网设备能打开界面，但**每一个 API 调用都会 403**（只能看不能用）。1.5.1 已修（fence 同时接管信任漏斗），并补了一条"本地与局域网必须同结果"的端到端断言防回归。
-
-### 1.5.0 之后的行为变化
-
-| | 1.4.x | 1.5.0 |
-|---|---|---|
-| DSH 自己的监听 | 开关打开时改成 `0.0.0.0` | **始终 `127.0.0.1`**（官方默认，插件不再改动它） |
-| 局域网入口 | DSH 自己监听局域网 | **插件内置反向代理**监听局域网地址并转发到 DSH |
-| 端口 | 同一个 | **同一个**（代理复用 DSH 的端口号） |
-| 开关的落点 | profile 补丁里的受管覆盖 | 插件内部状态（`dsh-lan.json` 的 `lanEnabled`） |
-| 关掉开关 | 删覆盖 + 等热重载 | **立即**停止对外监听 |
-| 口令 / 落地页 / 防火墙 | — | 完全不变 |
-
-## 升级（1.3.x → 1.4.0）
-
-包已改名（`dsh-LAN` → `dsh-lan-tool`），**用安装脚本装过旧版的机器需要按下面处理**；插件在首次激活时会自动完成迁移：
-
-1. **旧安装块/开关块被自动剥除**：`profiles/<profile>/cordis.patch.yml` 里 `dsh-LAN install block`、`dsh-LAN toggle block` 两段受管块会被删掉（profile 补丁层优先级高于 bundle 补丁层，留着会永远压过新配置——正是"开关显示关、实际仍绑 0.0.0.0"的成因）。迁移后局域网回到**关闭**状态，请在设置页重新打开。
-2. **旧防火墙规则被清理**：`dsh-LAN (auto)`、`DSH LAN Access (auto)` 会被删除（规则名已改成 `dsh-lan-tool (auto)`，旧规则再没有代码能碰到，留着会永久放行端口且 UI 看不见）。
-3. **口令保留**：口令仍存在 `%USERPROFILE%\.dsh\dsh-lan.json`（文件名没变，避免丢口令），无需重设。
-4. 旧的 `profiles/node_modules/dsh-LAN` 目录可以手工删除（新安装不会用到）。
-
-手工兜底（没跑迁移时）：把 `profiles/<profile>/cordis.patch.yml` 里两个受管块整段删掉，然后在设置卡片里重新开关一次。
+- **升级 DSH 后设置页没有卡片 / `/dsh-lan/status` 404**：升级只会更新依赖，不会重新加入 `dsh.profile.bundles`。装好新版后在 Plugins 页重新启用，再完全退出重启。
+- **重装后没有卡片**：profile 补丁可能残留下面两行，删掉并保存后刷新页面：
+  ```yaml
+  - id: dsh-lan-tool
+    disabled: true
+  ```
+- **手机打开显示 `dsh web authentication required…`**：地址里带了过期的 `?token=`。用卡片里的干净地址即可；1.7.1 起也会自动跳转到口令页。
+- **局域网页面一直“重新连接中”**：DSH 换了端口。刷新页面，或在卡片里固定局域网端口。
 
 ## 卸载
 
-在 Plugins 页移除该插件，或：
-
-```bash
-dsh plugin --profile desktop remove dsh-lan-tool
-```
-
-停用/卸载时：**局域网的对外监听会立即关闭**（它是插件自己的监听器，门禁也在插件里，所以不能等）；防火墙规则与 profile 补丁里任何遗留的受管块会在约 8 秒后清理（等这 8 秒是为了区分"热重载"与"真的没了"——热重载会立刻重新挂载插件，从而取消这次清理）。所以正常情况下卸载后局域网会自动回到**关闭**。
-
-下面两种情况需要手工确认（清理还没跑）：
-
-- 卸载后**立刻退出了 DSH**，或直接删掉了包目录；
-- 你想连口令一起清掉。
-
-手工清理三步：删 `%USERPROFILE%\.dsh\dsh-lan.json`；确认 `profiles/<profile>/cordis.patch.yml` 里没有 `dsh-lan-tool LAN block` 受管块（有就整段删掉）；`netsh advfirewall firewall show rule name="dsh-lan-tool (auto)"` 应无匹配（有就 `netsh advfirewall firewall delete rule name="dsh-lan-tool (auto)"`）。
-
-## 多机一致性原理
-
-单一 DSH 服务进程持有全部状态：会话（jsonl 持久化 + 内存投影）、工作区、目标、子代理。所有浏览器只是同一服务的客户端，通过 `/api` RPC 读写同一状态，通过事件流（WebSocket 下行）接收相同的服务端事件推送。桌面与移动端连接的是同一份状态，任何一端的操作对其他端实时可见。
-
-## 参考
-
-早期移动端实现参考过 [dsh-web-ui 的 dsh-remote-web-ui](https://github.com/zhu1090093659/dsh-web-ui)（独立轻量远程界面 + 令牌门）；v48 起改为直接复用官方界面，1.7.0 起官方 0.2.2 自带窄屏布局，插件不再注入竖屏适配，口令模型不变。
+在 Plugins 页移除即可。局域网监听会立即关闭；防火墙规则与补丁残留约 8 秒后清理。若要一并清除口令，删除 `%USERPROFILE%\.dsh\dsh-lan.json`。
 
 ## 许可证
 
