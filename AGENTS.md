@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.7.0 ↔ DeepSeek Harness 桌面版 0.2.2-rc.1**（`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-09 实测该文件仍写 rc.5，而 asar 已是 0.2.2-rc.1）。本文件的运行时事实均已在 0.2.2-rc.1 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.1-rc.5 → 0.2.2-rc.1 的变更（官方窄屏布局 + 插件删除移动端适配）见 §7 的 1.7.0 条。**
+当前基线：**dsh-lan-tool 1.7.1 ↔ DeepSeek Harness 桌面版 0.2.2-rc.1**（`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-09 实测该文件仍写 rc.5，而 asar 已是 0.2.2-rc.1）。本文件的运行时事实均已在 0.2.2-rc.1 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.1-rc.5 → 0.2.2-rc.1 的变更（官方窄屏布局 + 插件删除移动端适配）见 §7 的 1.7.0 条。**
 
 ---
 
@@ -67,7 +67,7 @@ test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会�
 
 **版本闸门（0.2.1 新增，先看这条再决定 `package.json` 怎么写）**：`dsh-app-boot` 的 `unmetRequirements()` 只校验**两处** —— 有 `engines.dsh` 时**只**看它（peer 全部忽略），否则逐个检查 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 `peerDependencies`；比较用 `semver.satisfies(..., { includePrerelease: true })`。不满足时 plugin-manager 会以 `incompatible-version` 拒绝安装/启用，要用 `dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <rt> --accept-risk` 授权。
 
-**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.7.0）写的是 `"engines": { "dsh": "0.2.2-rc.1" }`（**精确值，不是范围**）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
+**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.7.1）写的是 `"engines": { "dsh": "0.2.2-rc.1" }`（**精确值，不是范围**）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
 
 ```powershell
 $src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\desktop\node_modules\dsh-lan-tool'
@@ -192,7 +192,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**278 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**279 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -231,7 +231,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 - 在 `%TEMP%` 建一个一次性 `DSH_HOME`，profile 文本文件从线上 profile **复制**，`node_modules/dsh-lan-tool` 用 **junction 指向仓库工作树**（所以测的就是当前代码，不需要安装/发布），并把 `dsh-lan-tool` 追加进 `dsh.profile.bundles`；
 - 写 `dsh-lan.json` 时**删掉真实口令**（`passwordHash`/`salt`），只置 `lanEnabled: true`，口令由测试自己在启动后从**主机侧**调 `/dsh-lan/configure` 设一个新值 —— 所以这个测试不需要、也拿不到用户的口令；
-- 用 §7 1.4.5 那条"假 main 进程"手法启动真 Host（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` + asar 内的 `dsh-desktop-host`），收到 `ready` 后按顺序验证 16 项：代理起来且 DSH 仍在回环 / 无凭据的 `/` 302 到落地页、`/api` 403 / 落地页可达 / 错口令拒、对口令过 / mint 302 到**局域网 authority** 的令牌 URL / 令牌兑换 303 + 绑定该 authority 的 cookie / 带 cookie 能拿到 SPA / **补丁里始终没有 `webserver` 覆盖**；
+- 用 §7 1.4.5 那条"假 main 进程"手法启动真 Host（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` + asar 内的 `dsh-desktop-host`），收到 `ready` 后按顺序验证 37 项：代理起来且 DSH 仍在回环 / 无凭据的 `/` 302 到落地页、`/api` 403 / 落地页可达 / 错口令拒、对口令过 / mint 302 到**局域网 authority** 的令牌 URL / 令牌兑换 303 + 绑定该 authority 的 cookie / 带 cookie 能拿到 SPA / **补丁里始终没有 `webserver` 覆盖**；
 - 收尾会**优雅关闭**子进程（IPC `shutdown` → 5 秒后 SIGKILL 兜底）：直接 `kill()` 在 Windows 上会留下孤儿 Host，而它还占着局域网监听端口，下一次运行就会撞车（踩过一次）。
 
 **改 `lib/lan-proxy.js`、`makeLanAdmit()`、或任何与代理装配相关的代码后，跑它**（`npm test` 只覆盖代理的传输与门禁语义，跑在 `127.0.0.2` 上，不进真 Host）。
@@ -322,6 +322,13 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.7.1 — 局域网端的过期 token URL 不再死在 401
+
+- **现象（2026-11-09 用户实机）**：手机打开 `http://<LAN-IP>:<port>/?token=…`（旧书签 / 从 `dsh web` 复制的 URL / 启动器缓存的上一轮 URL）只看到一行纯文本：`dsh web authentication required; reopen the URL printed by dsh web.`
+- **根因（两层，第二层是第一次修错了才发现的）**：① `frontend-static` 的 fallback 调 `ctx.connection.authorizeIndex(request, {writeHead,end})` 时传的是 **WHATWG `Request`**，不是 Node `IncomingMessage`：**没有 `socket`**，所以 `isLocalPeer()` 恒 false；② `viaProxy()` 原来只读普通对象 `req.headers[PROXY_HEADER]`，而 WHATWG `Request.headers` 是 **`Headers` 实例**，下标访问得到 `undefined` ⇒ 代理标记也读不到。于是这条请求既非 local、也看不出经代理，落到 `!boundToNonLoopback → origAuthorizeIndex()`，DSH 对过期 token 直接 `writeUnauthorized()` 回 401。
+- **修复**：`lan-proxy.js` 的 `viaProxy()` 同时支持 `Headers.get()` 与普通对象；`decideAuthorize()` 先看 **`proxied`** 再看 peer：proxied 的 token 请求走新增的 `delegateTokenWithLandingFallback()`（包住 `res.writeHead`，DSH 写 401 就改写成 302 `/dsh-lan/`，**合法 token 仍原样走 303 + Set-Cookie**；401 体被吞掉，兼容 `{writeHead,end}` 假 response）；非本地 token 请求同样走 fallback（覆盖 `dsh web --host` 直连部署）；loopback-only 监听器上 **没有 socket 的 WHATWG Request** 视为本机、直接放行（此前本机浏览器打开 `http://127.0.0.1:<port>/` 会被 DSH 401）。桌面壳的 token 交换（peer 可判为 local）仍原样委派，**绝不**被改写成 302。
+- **验证**：`npm test` **279/279**（H 段静态断言锁 `viaProxy` 的 Headers 分支与 fallback）；e2e **37/37**，新增“5 a stale token URL lands on the password page”，并回归了“0 shell token → 303”“5 本机 WS/RPC 仍 101/200”（第一版修复曾让这两处变 200/401，说明 e2e 值得跑）。
 
 ### 1.7.0 — 对齐 DSH 0.2.2-rc.1；删除插件自带的移动端界面适配
 

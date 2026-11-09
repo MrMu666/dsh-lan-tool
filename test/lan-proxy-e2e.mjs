@@ -415,6 +415,18 @@ boot(env, async (local, readyUrl, stop) => {
 		const cookie = String(redeem.cookie ?? "").split(";")[0];
 		cookieForBrowser = cookie;
 		check("5 the cookie is a DSH session cookie for this authority", cookie.startsWith("dsh-auth-"), cookie.slice(0, 24));
+		// 5a ── a STALE token must not dead-end. A phone can arrive with an old
+		// `?token=` (a bookmark, a URL copied from `dsh web`, a launcher that
+		// cached a previous run's URL). Proxied requests are "local" by peer, so
+		// the plugin lets DSH judge the token and DSH answers 401 with "dsh web
+		// authentication required…", which is useless on a phone. The landing page
+		// is the only answer that can mint a fresh session.
+		const staleToken = await step(`${lanBase}/?token=stale-token-from-another-run`);
+		check(
+			"5 a stale token URL lands on the password page",
+			staleToken.status === 302 && staleToken.location === "/dsh-lan/",
+			`${String(staleToken.status)} ${String(staleToken.location)}`
+		);
 		const spa = await step(`${lanBase}/`, { headers: { cookie } });
 		check("5 SPA is served to a cookie-carrying LAN client", spa.status === 200 && spa.body.includes("<html"), `${String(spa.status)} len=${spa.body.length}`);
 

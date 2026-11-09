@@ -466,6 +466,19 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
     'the mint flow ends on GET /?token=… through the proxy — without this carve-out the LAN login cannot complete'
   );
   check('H the LAN gate keeps the landing flow reachable', server.includes('if (url.pathname.startsWith("/dsh-lan/")) return true;'));
+  // 1.7.1 — a stale `?token=` from a LAN client must not dead-end on DSH's 401
+  // text ("dsh web authentication required…"): frontend-static hands this code a
+  // WHATWG Request (no socket, Headers object), so the proxy stamp is the only
+  // locality signal that survives. A refused token falls back to the landing page.
+  check(
+    'H a stale token from a LAN client lands on the landing page',
+    server.includes('const delegateTokenWithLandingFallback')
+      && server.includes('if (!fellBack && status === 401)')
+      && server.includes('return delegateTokenWithLandingFallback(req, res, secure);')
+      && server.includes('const proxied = viaProxy(req);')
+      && proxySource.includes('typeof headers.get === "function"'),
+    'fallback / WHATWG-Request header handling missing'
+  );
   check('H nothing writes a webserver override any more', !server.includes('`    host: ') && !server.includes('"- id: webserver"') && !server.includes('host: \'${ALL_INTERFACES}\''));
   // 1.5.1 — the fence must patch the TRUST FUNNEL, not just requestRejection.
   // 0.2.1 admits /api through connection.admit() (dsh-api-gateway →
