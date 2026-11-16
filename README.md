@@ -15,14 +15,14 @@
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-lan-tool?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-lan-tool?style=flat-square&amp;label=downloads&amp;color=2f6fed"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square"></a>
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.2-rc.1" src="https://img.shields.io/badge/DSH-0.2.2--rc.1-4c8dff?style=flat-square"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.2-rc.3" src="https://img.shields.io/badge/DSH-0.2.2--rc.3-4c8dff?style=flat-square"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/MrMu666/dsh-lan-tool?style=flat-square&amp;label=release&amp;color=8957e5"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/MrMu666/dsh-lan-tool?style=flat-square&amp;label=stars&amp;color=e3b341"></a>
 </p>
 
 ---
 
-> ⚠️ **版本要求**：`1.7.1` 仅支持 DSH 桌面版 **`0.2.2-rc.1`**（`engines.dsh` 精确锁定，其它版本会被拒绝安装/启用）。旧版 DSH 请使用对应的旧版插件，见 [Releases](https://github.com/MrMu666/dsh-lan-tool/releases)。
+> ⚠️ **版本要求**：`1.7.2` 仅支持 DSH 桌面版 **`0.2.2-rc.3`**（`engines.dsh` 精确锁定，其它版本会被拒绝安装/启用）。旧版 DSH 请使用对应的旧版插件，见 [Releases](https://github.com/MrMu666/dsh-lan-tool/releases)。
 
 让手机、平板或另一台电脑通过局域网打开同一份 DeepSeek Harness：**先输口令才能看页面**，主机自己打开**不需要口令**。
 
@@ -38,7 +38,7 @@
 2. **完全退出桌面版，再重新打开**（node 半边只在启动时载入）；
 3. 打开 设置 → General →「局域网访问」，**先设置访问口令**（至少 4 位），再打开开关。
 
-> 刚发布的版本可能被 pnpm 的 24 小时窗口挡回旧版；此时在 Plugins 页显式写版本，例如 `dsh-lan-tool@1.7.1`。
+> 刚发布的版本可能被 pnpm 的 24 小时窗口挡回旧版；此时在 Plugins 页显式写版本，例如 `dsh-lan-tool@1.7.2`。
 >
 > 也可以配合 [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) 与 [dsh-app](https://github.com/MrMu666/dsh-app) 使用。
 

@@ -21,7 +21,7 @@ const HOME = mkdtempSync(join(tmpdir(), 'dsh-lan-test-'));
 process.env.DSH_HOME = HOME;
 const PATCH = join(HOME, 'profiles', 'desktop', 'cordis.patch.yml');
 /** The one DSH release this plugin version pins; bump together with package.json. */
-const SUPPORTED_DSH = '0.2.2-rc.1';
+const SUPPORTED_DSH = '0.2.2-rc.3';
 
 // The firewall must never be touched for real: stub node:child_process. The
 // stub is scriptable, so the firewall verdicts below can be driven through the
@@ -567,7 +567,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('H the composition watchdog exists', server.includes('const watchdog = setInterval') && server.includes('the webServer service disappeared'));
   check('H diag reports the composition state', server.includes('composition: webServerPort(ctx) > 0 ? "ok" : "dead"'));
   check('H the watchdog is cleared on dispose', server.includes('clearInterval(watchdog)'));
-  // 1.7.0 — the plugin targets exactly one DSH release (0.2.2-rc.1). The
+  // 1.7.2 — the plugin targets exactly one DSH release (0.2.2-rc.3). The
   // manifest gate is `engines.dsh` (dsh-app-boot checks engines.dsh and, when
   // present, ignores peers entirely), so the pin has to live there.
   check('H the manifest pins exactly the supported DSH release', pkg.engines?.dsh === SUPPORTED_DSH, JSON.stringify(pkg.engines));
@@ -924,7 +924,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 }
 
 // ── N2. authorizeIndex forwards DSH's `secure` flag (v1.6.0) ───────────────
-// DSH 0.2.1 added a third parameter (still present in 0.2.2-rc.1): the official
+// DSH 0.2.1 added a third parameter (still present in 0.2.2-rc.3): the official
 // callers pass `webServer.protocol === "https:"` and BrowserAuth uses it for the
 // session cookie's `Secure` attribute. Every delegation this plugin makes must
 // carry it through — dropping it silently downgrades a TLS deployment's cookie.
