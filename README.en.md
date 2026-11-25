@@ -22,7 +22,7 @@
 
 ---
 
-> ⚠️ **Version requirement**: `1.9.0` supports the whole DSH desktop **0.2.3** line (`engines.dsh` = `>=0.2.3-alpha.1 <0.2.4-0`; the build verified file-by-file is `0.2.3-alpha.2`). After every plugin install, plugin upgrade, or DSH upgrade the LAN switch starts **off**, and turning it on runs a compatibility self-check: it opens only when that check passes, otherwise it stays closed and says why. For older DSH releases use the matching older plugin — see [Releases](https://github.com/MrMu666/dsh-lan-tool/releases).
+> ⚠️ **Version requirement**: `1.9.1` supports the whole DSH desktop **0.2.3** line (`engines.dsh` = `>=0.2.3-alpha.1 <0.2.4-0`; the build verified file-by-file is `0.2.3-alpha.2`). After every plugin install, plugin upgrade, or DSH upgrade the LAN switch starts **off**, and turning it on runs a compatibility self-check: it opens only when that check passes, otherwise it stays closed and says why. For older DSH releases use the matching older plugin — see [Releases](https://github.com/MrMu666/dsh-lan-tool/releases).
 
 Open the same DeepSeek Harness from a phone, tablet, or another computer on your LAN: **a password is required before the page is shown**, while the host machine itself needs none.
 
@@ -38,7 +38,7 @@ Open the same DeepSeek Harness from a phone, tablet, or another computer on your
 2. **Fully quit the desktop app and reopen it** (the node half is loaded once per app run);
 3. Open Settings → General → "LAN access", **set a password** (at least 4 characters), then turn the switch on.
 
-> A brand-new release may be held back by pnpm's 24-hour window; install the version explicitly, e.g. `dsh-lan-tool@1.9.0`.
+> A brand-new release may be held back by pnpm's 24-hour window; install the version explicitly, e.g. `dsh-lan-tool@1.9.1`.
 >
 > Pairs well with [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) and [dsh-app](https://github.com/MrMu666/dsh-app).
 
@@ -71,7 +71,7 @@ Open the same DeepSeek Harness from a phone, tablet, or another computer on your
   - id: dsh-lan-tool
     disabled: true
   ```
-- **Windows install fails with `EPERM ... rename '...package.json.<random>' -> '...package.json'`**: the plugin package is fine; pnpm's atomic replacement of the profile manifest was briefly blocked by a third-party security product's real-time protection (Huorong on the machine tested on 2026-11-16). Add `%USERPROFILE%\.dsh\profiles` to that product's trusted/excluded directories, or temporarily disable real-time protection and retry; if it still fails, fully quit the desktop app and install with `dsh plugin --profile desktop add dsh-lan-tool@1.9.0`, then restore protection. Do not hand-edit the profile `package.json`, and do not patch pnpm for this.
+- **Windows install fails with `EPERM ... rename '...package.json.<random>' -> '...package.json'`**: the plugin package is fine; pnpm's atomic replacement of the profile manifest was briefly blocked by a third-party security product's real-time protection (Huorong on the machine tested on 2026-11-16). Add `%USERPROFILE%\.dsh\profiles` to that product's trusted/excluded directories, or temporarily disable real-time protection and retry; if it still fails, fully quit the desktop app and install with `dsh plugin --profile desktop add dsh-lan-tool@1.9.1`, then restore protection. Do not hand-edit the profile `package.json`, and do not patch pnpm for this.
 - **Phone shows `dsh web authentication required…`**: the URL carries a stale `?token=`. Use the clean address from the card; since 1.7.1 it also redirects to the password page automatically.
 - **A LAN page keeps saying "reconnecting"**: DSH changed its port. Refresh the page, or pin the LAN port in the card.
 

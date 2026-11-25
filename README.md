@@ -22,7 +22,7 @@
 
 ---
 
-> ⚠️ **版本要求**：`1.9.0` 支持 DSH 桌面版 **0.2.3 整条版本线**（`engines.dsh` = `>=0.2.3-alpha.1 <0.2.4-0`；逐文件核对过的构建是 `0.2.3-alpha.2`）。每次安装/升级插件或升级 DSH 后，局域网开关都会**自动关闭**，重新开启时做一次兼容性自检——自检通过才会打开，失败则保持关闭并说明原因。旧版 DSH 请使用对应的旧版插件，见 [Releases](https://github.com/MrMu666/dsh-lan-tool/releases)。
+> ⚠️ **版本要求**：`1.9.1` 支持 DSH 桌面版 **0.2.3 整条版本线**（`engines.dsh` = `>=0.2.3-alpha.1 <0.2.4-0`；逐文件核对过的构建是 `0.2.3-alpha.2`）。每次安装/升级插件或升级 DSH 后，局域网开关都会**自动关闭**，重新开启时做一次兼容性自检——自检通过才会打开，失败则保持关闭并说明原因。旧版 DSH 请使用对应的旧版插件，见 [Releases](https://github.com/MrMu666/dsh-lan-tool/releases)。
 
 让手机、平板或另一台电脑通过局域网打开同一份 DeepSeek Harness：**先输口令才能看页面**，主机自己打开**不需要口令**。
 
@@ -38,7 +38,7 @@
 2. **完全退出桌面版，再重新打开**（node 半边只在启动时载入）；
 3. 打开 设置 → General →「局域网访问」，**先设置访问口令**（至少 4 位），再打开开关。
 
-> 刚发布的版本可能被 pnpm 的 24 小时窗口挡回旧版；此时在 Plugins 页显式写版本，例如 `dsh-lan-tool@1.9.0`。
+> 刚发布的版本可能被 pnpm 的 24 小时窗口挡回旧版；此时在 Plugins 页显式写版本，例如 `dsh-lan-tool@1.9.1`。
 >
 > 也可以配合 [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) 与 [dsh-app](https://github.com/MrMu666/dsh-app) 使用。
 
@@ -71,7 +71,7 @@
   - id: dsh-lan-tool
     disabled: true
   ```
-- **Windows 安装时出现 `EPERM ... rename '...package.json.<随机数>' -> '...package.json'`**：这不是插件包损坏，而是 pnpm 原子替换 profile 清单时，文件被第三方安全软件的实时防护短暂锁住（本机 2026-11-16 实测为火绒安全软件）。把 `%USERPROFILE%\.dsh\profiles` 加入该安全软件的信任/排除目录，或临时关闭实时防护后重试；仍失败就完全退出桌面版，再用 `dsh plugin --profile desktop add dsh-lan-tool@1.9.0` 安装，装完恢复防护。不要手动改 profile 的 `package.json`，也不要为此给 pnpm 打补丁。
+- **Windows 安装时出现 `EPERM ... rename '...package.json.<随机数>' -> '...package.json'`**：这不是插件包损坏，而是 pnpm 原子替换 profile 清单时，文件被第三方安全软件的实时防护短暂锁住（本机 2026-11-16 实测为火绒安全软件）。把 `%USERPROFILE%\.dsh\profiles` 加入该安全软件的信任/排除目录，或临时关闭实时防护后重试；仍失败就完全退出桌面版，再用 `dsh plugin --profile desktop add dsh-lan-tool@1.9.1` 安装，装完恢复防护。不要手动改 profile 的 `package.json`，也不要为此给 pnpm 打补丁。
 - **手机打开显示 `dsh web authentication required…`**：地址里带了过期的 `?token=`。用卡片里的干净地址即可；1.7.1 起也会自动跳转到口令页。
 - **局域网页面一直“重新连接中”**：DSH 换了端口。刷新页面，或在卡片里固定局域网端口。
 

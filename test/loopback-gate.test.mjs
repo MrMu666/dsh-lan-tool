@@ -115,10 +115,20 @@ function makeHarness({ bindHost = '0.0.0.0', port = 19387, trustedAnswer = OFFIC
   const webServer = {
     host: bindHost,
     port,
+    // Mirrors the real service: one plain Map per routing table, and a duplicate
+    // (kind, path) throws (v1.9.1 needs this to exercise the reclaim path).
+    exact: new Map(),
+    prefixes: new Map(),
     config: { host: bindHost, port, compression: 'gzip', compressionLevel: 6, compressionThresholdBytes: 1024 },
     register(route) {
+      const table = route.kind === 'exact' ? this.exact : this.prefixes;
+      if (table.has(route.path)) throw new Error(`webserver: duplicate ${route.kind} route "${route.path}"`);
+      table.set(route.path, route);
       routes.set(`${route.kind} ${route.path}`, route);
-      return () => routes.delete(`${route.kind} ${route.path}`);
+      return () => {
+        table.delete(route.path);
+        routes.delete(`${route.kind} ${route.path}`);
+      };
     },
   };
   const ctx = {
@@ -136,7 +146,7 @@ function makeHarness({ bindHost = '0.0.0.0', port = 19387, trustedAnswer = OFFIC
     },
   };
   const dispose = plugin.apply(ctx, {});
-  return { ctx, connection, browserPeer, routes, calls, dispose };
+  return { ctx, connection, browserPeer, webServer, routes, calls, dispose };
 }
 
 function makeReq({ peer, host, method = 'GET', url = '/', headers = {}, body = null, proxied = false }) {
@@ -1134,6 +1144,47 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('P a verified build enables without a warning', okBody.desiredEnabled === true && okBody.incompatible === null, JSON.stringify({ d: okBody.desiredEnabled, i: okBody.incompatible }));
   check('P the toggle retires the update notice', readIt().autoDisabled === undefined);
   good.dispose();
+}
+
+// ── Q. v1.9.1: a reload / re-enable must not wedge on "duplicate route" ────
+// The failure this section locks down: "升级后启用失败: webserver: duplicate exact
+// route /dsh-lan/status". `webServer.register()` is synchronous while fiber
+// disposal is asynchronous, so the second apply of the same row arrives while
+// the first still owns the paths — and after a VERSION upgrade the old instance
+// even belongs to another module, whose disposer cannot be called.
+{
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
+  // 1) apply twice without a dispose — the register/dispose race
+  const h = makeHarness({ bindHost: '127.0.0.1' });
+  const before = h.routes.size;
+  let threw = null;
+  try { plugin.apply(h.ctx, {}); } catch (error) { threw = error; }
+  check('Q a second apply without a dispose does not throw', threw === null, String(threw));
+  check('Q ...and the route table did not double', h.routes.size === before, `before=${before} after=${h.routes.size}`);
+  const res = makeRes();
+  await h.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), res);
+  check('Q the surviving route still answers', res.statusCode === 200 && json(res).version === pkg.version, `${res.statusCode} ${res.body.slice(0, 60)}`);
+  h.dispose();
+
+  // 2) a path left behind by the PREVIOUS package version (unreachable disposer)
+  const g = makeHarness({ bindHost: '127.0.0.1' });
+  g.webServer.exact.set('/dsh-lan/status', { kind: 'exact', path: '/dsh-lan/status', auth: 'anonymous', handler: () => { throw new Error('stale handler'); } });
+  let threw2 = null;
+  try { plugin.apply(g.ctx, {}); } catch (error) { threw2 = error; }
+  check('Q a stale route from another version is reclaimed', threw2 === null, String(threw2));
+  const res2 = makeRes();
+  await g.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), res2);
+  check('Q ...and the seat now serves THIS version', res2.statusCode === 200 && json(res2).version === pkg.version, `${res2.statusCode} ${res2.body.slice(0, 60)}`);
+  g.dispose();
+
+  // 3) unrelated registration failures must still surface
+  const k = makeHarness({ bindHost: '127.0.0.1' });
+  k.dispose();
+  k.webServer.register = () => { throw new Error('webserver: something else'); };
+  let threw3 = null;
+  try { plugin.apply(k.ctx, {}); } catch (error) { threw3 = error; }
+  check('Q an unrelated register failure is still raised', threw3 !== null && /something else/.test(String(threw3)), String(threw3));
 }
 
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);

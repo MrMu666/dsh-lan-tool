@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.9.0 ↔ DeepSeek Harness 桌面版 0.2.3 线**（`>=0.2.3-alpha.1 <0.2.4-0`；逐文件核对的是 0.2.3-alpha.2；`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-24 实测 runtime.json 仍写 0.2.2-rc.3，而 asar 已是 `0.2.3-alpha.2`）。本文件的运行时事实均已在 0.2.3-alpha.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.2-rc.3 → 0.2.3-alpha.2 的认证重构（整个门禁换了落点）见 §3.6 与 §7 的 1.8.0 条。**
+当前基线：**dsh-lan-tool 1.9.1 ↔ DeepSeek Harness 桌面版 0.2.3 线**（`>=0.2.3-alpha.1 <0.2.4-0`；逐文件核对的是 0.2.3-alpha.2；`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-24 实测 runtime.json 仍写 0.2.2-rc.3，而 asar 已是 `0.2.3-alpha.2`）。本文件的运行时事实均已在 0.2.3-alpha.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.2-rc.3 → 0.2.3-alpha.2 的认证重构（整个门禁换了落点）见 §3.6 与 §7 的 1.8.0 条。**
 
 ---
 
@@ -55,9 +55,9 @@ test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会�
 - **Windows 安装报 `EPERM: operation not permitted, rename '…\profiles\<p>\package.json.<随机数>' -> '…\package.json'`（2026-11-16 实测）**：不是插件包损坏，也不是 profile `package.json` 的权限/ACL 问题——实测该文件无独占句柄、ACL 为当前用户完全控制、同目录 `File.Move` 探测成功，且 Windows Defender 实时防护是关闭的。真正原因是**第三方安全软件的实时防护**（本机为 `火绒安全软件`：`HipsDaemon`/`HipsTray` 常驻）在 pnpm 写完 `package.json.<随机数>` 临时文件、准备 rename 覆盖目标的瞬间短暂锁住目标，pnpm 的 manifest 写入没有重试，于是抛出 EPERM。DSH 的 `@deepseek-ai/dsh-atomic-write` 对 Windows 的 `EACCES`/`EBUSY`/`EPERM` 有 8 次退避重试（20→200ms），但 pnpm 自己的 writer 不受这层保护，所以插件和 DSH 代码都没坏。**解法**：把 `<DSH_HOME>\profiles` 加入火绒（或其它安全软件）的信任/排除目录，或临时关闭实时防护后重试；也可完全退出桌面版后用 `dsh plugin --profile desktop add dsh-lan-tool@1.7.2` 安装，装完恢复防护。**不要**手改 profile `package.json`，不要给 pnpm 打补丁，也不要因此给插件加安装脚本。瞬时锁直接重试也可能成功。
 - **刚发布的版本会被 pnpm 的"发布年龄"策略挡住（2026-10-12 实测事故，排查"修了却没生效"先看这条）**：pnpm 默认不安装"太新"的包，而 `dsh-plugin-manager` 只会给**它实际装到的那个版本**在 profile 的 `pnpm-workspace.yaml` 里补一条 `minimumReleaseAgeExclude`。于是当天连着发布 1.4.0 → 1.4.1 → 1.4.2 之后，用户在 Plugins 页输入包名**每次都解析回 1.4.0**（日志现象：`+ dsh-lan-tool ^1.4.0`、`Progress: resolved … reused 1`；证据文件：`<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml`），看起来就是"新版本没修好"，实际是旧版本被反复装上、重启多少次都一样。
   - **判定**：`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 里有没有目标版本 ＋ 安装日志里的 `^<版本>`。
-  - **解法**：把目标版本加进该名单（如 `- dsh-lan-tool@1.4.2`），或在 Plugins 页/CLI 显式写 `包名@版本`。**发新版并希望用户立刻装到时，先补这一条**，否则对方拿到的还是上一次的版本。
+  - **解法**：该名单里写**不带版本号的包名** `- dsh-lan-tool`（一次覆盖全部版本，见 §5.1 的 2026-11-25 修订），或临时按版本写 `包名@版本`；或在 Plugins 页/CLI 显式写 `包名@版本`。**发新版并希望用户立刻装到时，先补这一条**，否则对方拿到的还是上一次的版本。
   - **作者机 2026-10-14 的现状（重要）**：作者机的 `pnpm-workspace.yaml` 里那 5 条 `dsh-lan-tool@1.4.x` 豁免**已被有意清空**（当时在做彻底卸载）。**因此下次要在作者机装本插件，必须先手动补回 `- dsh-lan-tool@<目标版本>`**，否则 24 小时窗口会把刚发布的版本挡回去 —— 表现就是"明明发了新版，装上的还是旧版"。
-  - **"卸载/安装失败：`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`"与"豁免没生效"是两个不同层次的闸（2026-10-14 实测）**：任何 `install / add / remove` 都会**先拿旧 lockfile 逐条重跑策略**（pnpm 的 lockfile 验证闸），这一步**不认** `minimumReleaseAgeExclude`——所以会出现"09:17 装得上（全新解析，认豁免）、09:48 卸不掉（复检旧 lockfile，不认豁免）"这种自相矛盾的现象，而**包其实在报错前就已经被删掉了**（`node_modules/<pkg>` 已不存在），非零退出码只是复检失败。**解法（实测 exit 0）**：先跑一次 `pnpm install --lockfile-only` 刷新 lockfile 与验证缓存，再重试原命令。日志在 `<profile>/.plugin-manager/logs/operation-*/pnpm.log`（`✓ Lockfile passes…` 与 `✗ Lockfile failed supply-chain policy check` 两行就是判据）。
+  - **"卸载/安装失败：`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`"与"豁免没生效"是两个不同层次的闸（2026-10-14 实测；2026-11-25 补正：这个 lockfile 验证闸**确实会读** `minimumReleaseAgeExclude` —— 只要名单覆盖了 lockfile 里锁着的那个版本就能过，裸包名同理）**：任何 `install / add / remove` 都会**先拿旧 lockfile 逐条重跑策略**（pnpm 的 lockfile 验证闸），这一步**不认** `minimumReleaseAgeExclude`——所以会出现"09:17 装得上（全新解析，认豁免）、09:48 卸不掉（复检旧 lockfile，不认豁免）"这种自相矛盾的现象，而**包其实在报错前就已经被删掉了**（`node_modules/<pkg>` 已不存在），非零退出码只是复检失败。**解法（实测 exit 0）**：先跑一次 `pnpm install --lockfile-only` 刷新 lockfile 与验证缓存，再重试原命令。日志在 `<profile>/.plugin-manager/logs/operation-*/pnpm.log`（`✓ Lockfile passes…` 与 `✗ Lockfile failed supply-chain policy check` 两行就是判据）。
 - **旧的"补丁路径"（把包拷进 `profiles/node_modules` + 正则改 profile 补丁）已随 1.4.0 的安装脚本一起删除，不要恢复**：那套写法必须与 plugin-manager 抢写同一个 YAML 文件，而且在 0.2.0 里 `webServer.register()` 对重复路由直接抛异常。
 - 装/卸载开关也可用 `writePluginEnabled` 的产物（`@deepseek-ai/dsh-plugin-manager/lib/types/patch.js`：按 **id + 可选 name** 匹配 profile 补丁里的覆盖行，匹配不到就**追加**一条 `{id, disabled}`）。所以覆盖行的 `id`/`name` 必须与新包名一致，改名时别只改一半。
 - **升级已有依赖不会重新启用 bundle（2026-10-30 的实机教训）**：`reconcile()` 只把**本次新增**的依赖追加进 `dsh.profile.bundles`；`dsh-lan-tool` 已在 `dependencies` 里时，`add dsh-lan-tool@<新版>` 只更新版本，不会把它加回 bundles。若它曾被移出（例如 DSH 升级后不兼容被跳过/停用），装完新版必须在 Plugins 页重新启用，再完全退出重启。
@@ -68,7 +68,7 @@ test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会�
 
 **版本闸门（0.2.1 新增，先看这条再决定 `package.json` 怎么写）**：`dsh-app-boot` 的 `unmetRequirements()` 只校验**两处** —— 有 `engines.dsh` 时**只**看它（peer 全部忽略），否则逐个检查 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 `peerDependencies`；比较用 `semver.satisfies(..., { includePrerelease: true })`。不满足时 plugin-manager 会以 `incompatible-version` 拒绝安装/启用，要用 `dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <rt> --accept-risk` 授权。
 
-**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.9.0）写的是 `"engines": { "dsh": ">=0.2.3-alpha.1 <0.2.4-0" }`（**范围，只覆盖 0.2.3 整条线**；上界必须写 `<0.2.4-0`，写 `<0.2.4` 会把 0.2.4 的 prerelease 也吃进来）。范围只决定"能不能装"，"能不能用"由运行时自检决定（见 §3.6）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
+**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.9.1）写的是 `"engines": { "dsh": ">=0.2.3-alpha.1 <0.2.4-0" }`（**范围，只覆盖 0.2.3 整条线**；上界必须写 `<0.2.4-0`，写 `<0.2.4` 会把 0.2.4 的 prerelease 也吃进来）。范围只决定"能不能装"，"能不能用"由运行时自检决定（见 §3.6）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
 
 ```powershell
 $src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\desktop\node_modules\dsh-lan-tool'
@@ -197,7 +197,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**285 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（非代理请求一律交回 DSH 自己的围栏；只有"本方代理盖了戳"的请求才被信任，且只有"戳 + 口令"才拿到 owner Peer；未盖章的请求即使带对口令也拿不到；错口令/无口令一律回落 DSH；直连部署只在 DSH 自己承认的 authority 上认口令；`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、路由 `auth` 声明（8 条 `anonymous` + `/lanapi` 保持 required）、`?token=` 剥除、代理 `rewrite` 钩子、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**291 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（非代理请求一律交回 DSH 自己的围栏；只有"本方代理盖了戳"的请求才被信任，且只有"戳 + 口令"才拿到 owner Peer；未盖章的请求即使带对口令也拿不到；错口令/无口令一律回落 DSH；直连部署只在 DSH 自己承认的 authority 上认口令；`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、路由 `auth` 声明（8 条 `anonymous` + `/lanapi` 保持 required）、`?token=` 剥除、代理 `rewrite` 钩子、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -288,7 +288,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - `npm trust list` 本身也要 2FA（同样是 EOTP），**不能**当无凭据的只读复核用；trust 是否生效以上线结果为准（本次以 CI 首发成功为准）。
 - **死路一条（省得再试）**：想借 Git for Windows 的 mintty 给 npm 一个 TTY 走官方流程不行——mintty 的 `-l/--log` 记录会让子进程 stdout 变成管道（实测 `stdout=no`），TTY 条件照样不成立；直接 `Start-Process mintty` 时 PATH 里也没有 `/usr/bin`，`bash`/`npm` 的 shebang 会找不到 bash。
 - `publish-npm` 的三道守卫（都做成「失败或跳过」，绝不静默发错东西）：包名必须是 `dsh-lan-tool`；`v<package.json version>` 必须等于 tag（不一致直接红灯）；registry 上已有同版本则**跳过**（所以重跑、补跑、给已发布版本重推 tag 都是幂等的）。预发布 tag（含 `-`，如 `v1.5.0-rc.1`）走 `--tag next`，**不动 `latest`**——DSH 装插件解析的是 `latest`，别让它落到 rc 上。
-- **发布后的收尾：把作者机的 `minimumReleaseAgeExclude` 换成新版本（2026-10-14 起为约定）**：每次发完新版，把 `<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` 里那条 `- dsh-lan-tool@<旧版本>` **替换**为 `<新版本>`（只留最新一条，删旧），否则 pnpm 的 24 小时窗口会让作者机装不上刚发布的版本（就是 §2 那个坑）。**只改豁免、不要代劳升级**：作者明确要求自己执行安装/升级；改完用 `pnpm config get minimumReleaseAgeExclude --dir <该 profile>` 在**临时副本**里确认 pnpm 真读到了（别为了让 pnpm 读到而在线上 profile 里跑命令）。注意：**分发出去的豁免改不了**（它在别人的 profile 里，不在仓库里），这条只针对作者机。
+- **发布后的收尾：把作者机的 `minimumReleaseAgeExclude` 写成不带版本号的包名（2026-11-25 修订）**：`<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml` 里保持一条 `- dsh-lan-tool`（**不要**按版本逐条"换新删旧"）。逐条替换会在下一次升级时炸掉：pnpm 在 `remove` 之前先用旧 lockfile 重跑策略，而旧 lockfile 锁着的正是刚被移出豁免名单的那个版本 ⇒ `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`、"无法移除 <旧版本>"、升级直接失败。2026-11-25 实测（pnpm 11.28.5，临时工程复现）：只豁免 `1.9.0` 时 `remove 1.8.0` 失败；豁免写裸包名时 `remove 1.8.0` 与 `add 1.9.0` 都 exit 0。裸包名一次覆盖该包的全部版本，之后发版不用再改这个文件。**只改豁免、不要代劳升级**：作者明确要求自己执行安装/升级；改完用 `pnpm config get minimumReleaseAgeExclude --dir <该 profile>` 在**临时副本**里确认 pnpm 真读到了（别为了让 pnpm 读到而在线上 profile 里跑命令）。注意：**分发出去的豁免改不了**（它在别人的 profile 里，不在仓库里），这条只针对作者机。
 - **顺便确认 `npm` 侧真的上线了**：`publish-npm` 成功之后轮询 `https://registry.npmjs.org/dsh-lan-tool` 的 `dist-tags`，`latest` 变成新版本、且新版本 `dist.attestations.provenance.predicateType` 存在，才算发完（别只看 workflow 绿灯）。GitHub 的 Actions/Releases REST API 未认证时**很容易撞 403 限流**，那时以 npm 的 `latest` 为准即可 —— `publish-npm` 是 `needs: release`，它成功就蕴含 Release 已建。
 - **排障要看 verbose**：npm 的 OIDC 失败是**被吞掉的**（`oidc()` 里 `catch` 只写 verbose 日志，然后照常发 → 表现出来的往往是 401/404 而不是"OIDC 失败"）。所以要 `npm publish --loglevel=verbose`，真正的行是 `Failed token exchange request with body message: …`。最常见就是 trusted publisher 没配或 workflow 文件名/owner/repo 对不上。token 兑换靠 `id-token: write` 提供的 `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN`；缺权限时 npm 直接跳过 OIDC（`Skipped because incorrect permissions for id-token`）。
 - **provenance 只对公开仓库自动开**：`oidc()` 里要求 OIDC token 的 `repository_visibility === 'public'` 且包是 public 才会 `opts.provenance = true`；仓库私有时照常发布、只是没有溯源徽章。另外 OIDC 只在 CI 里生效（`ciInfo.GITHUB_ACTIONS` 等），**本机 `npm publish` 永远走普通登录+OTP 路径**，两者不冲突。
@@ -330,6 +330,14 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 ## 7. 历史修复（防回归）
 
+### 1.9.1 — 升级/重新启用不再撞 "duplicate route"（不需要重启即可自愈）
+
+- **现象（2026-11-25 用户实机）**：从 1.8.0 升到 1.9.0 后在 Plugins 页点"启用"，直接失败：`webserver: duplicate exact route "/dsh-lan/status"`；此后每次点启用都同样失败，只能重启应用。
+- **根因**：`webServer.register()` 是**同步**的，而 fiber 的 dispose 是**异步**的 ⇒ 新实例的 `apply()` 会在旧实例仍占着这些路径时运行。跨版本更彻底：1.8.0 的路由属于**另一个模块实例**，它的 disposer 根本不在新模块的变量里，无从调用。
+- **修法**：`registerRoute()` 捕获注册异常，**仅当**错误是 `duplicate (exact|prefix|upgrade) route` 且 `webServer.exact` / `.prefixes` 是可达的 Map 时，删掉那条陈旧条目并重试一次；其他错误照旧抛出（不吞）。同时 `apply()` 开头 `releaseStaleRoutes()` 先把**本模块**上一轮注册的路由还回去，覆盖"同版本重载"的竞态。
+- **效果**：装完新版直接点"启用"就能成功（无需重启），并且能**自愈已经卡在失败状态的实例**。
+- **验证**：`npm test` **291/291**（新增 Q 段 6 项：无 dispose 的二次 apply 不抛、路由表不翻倍、跨版本陈旧路由被认领且服务的是新代码、无关注册错误仍然抛出）；真 Host e2e **45/45**。
+- **注意**：`forgetRoute()` 依赖 `WebServer` 的 `exact`/`prefixes` 是普通属性（0.2.3 实测是）。若将来变成真私有字段，`instanceof Map` 检查会让它安全地退回"抛错"，不会误删别人的路由。
 ### 1.9.0 — 版本闸改成 0.2.3 整条线；升级后强制关闸，开启时做兼容性自检
 
 - **为什么放宽**：0.2.3 天天出 alpha，精确钉死意味着每个 nightly 都要发一次插件。`engines.dsh` 改成 `>=0.2.3-alpha.1 <0.2.4-0`（上界必须写 `<0.2.4-0`：写 `<0.2.4` 会把 0.2.4 的 prerelease 也吃进来；`^0.2.3` 则一个 alpha 都不匹配 —— 三条都用 asar 里的 semver 实测过）。`dshReleases` 只记录**逐文件核对过**的构建（当前 `0.2.3-alpha.2`），它仍是纯元数据。
@@ -338,7 +346,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
   2. **开启即自检**：`configure({enabled:true})` 先跑 `probeContract()`（`isTrustedRequest` + `authentication.authenticate` + `webServer.register` 都在，且 `ensureFencePatched` 能装上），任一缺失 ⇒ 开关保持关闭、`incompatible` 写上缺哪一块；通过后代理才开监听，随即 `probeLive()` 用本机的局域网地址实测两个方向（`/dsh-lan/` 必须 200，未认证的 `/` 必须 302），失败则**立刻关掉监听**并回写原因。
 - **UI 约定（用户要求）**：自检**通过时不显示任何红字**；只有失败才在卡片上出现一行红色说明。`autoDisabled` 用中性灰字提示一次。
 - **顺带**：`profileOf` 现在带出 `installAnchor`；`buildStatus` 新增 `autoDisabled` 与 `incompatible`。
-- **验证**：`npm test` **285/285**（新增 P 段 12 项：升级关闸 / 同版本不关 / DSH 升级关闸 / 缺接口拒绝开启 / 健康构建无警告）；真 Host e2e **45/45**（新增"升级后门是关的""开启通过自检后 `enforcement: full`、`incompatible: null`"）。
+- **验证**：`npm test` **291/291**（新增 P 段 12 项：升级关闸 / 同版本不关 / DSH 升级关闸 / 缺接口拒绝开启 / 健康构建无警告）；真 Host e2e **45/45**（新增"升级后门是关的""开启通过自检后 `enforcement: full`、`incompatible: null`"）。
 ### 1.8.0 — 适配 DSH 0.2.3-alpha.2 的认证重构（门禁换挂接点，落地页去掉 mint）
 
 - **背景**：用户更新到桌面版 0.2.3-alpha.2（rc.3 → rc.4 → rc.5 → alpha.1 → alpha.2，2361 commits）。alpha.1 的"Web 连接模式远程登录 + 标准化连接鉴权 API 供插件注册"就是这次重构：Connection 把认证做成 Provider 注册表，**移除** `requestRejection` / `browserAuth` / `authorizeIndex` / `authenticatedUrl` / `isTrusted` / `admitConnection`，WebServer 每条路由新增 `auth: 'anonymous' | 'required' | 'deny'`（缺省 `required`），授权统一走 `webserver/authorize`。⇒ **1.7.2 的口令门在 0.2.3 上连一个补丁都装不上**（`ensureFencePatched` 第一步就返回 false），即使强行 `allow-version` 也会出现"设置卡绿灯、局域网全 403"的假象。
@@ -351,7 +359,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - **桌面壳握手已变**：0.2.3 改成 IPC 传 secret + `dsh-desktop-session` cookie + `DesktopAuthentication` provider，`authenticateWebHost()` 的 303/Set-Cookie 契约消失；1.4.5 的历史包袱与 `patchedAuthorize` 一起作废。
 - **客户端半边几乎不变**：`__ModuleLoader__.load`、`/plugins/<包名>/client.js`、slot 注册（`priority`/`order`/`registrant`）、`uiWorkspace`/`workspaces`、`connection` handle、`__DSH_TRANSPORT__.ownsHost`、`settings.general.item`、`sidebar.footer.action`、两个 `directoryFlow` 洞都在；`apply(ctx)` 不读第二参，`SyncedConfig` 变化无影响。**唯一要注意**：`/plugins/events` 已删除（调试改用 `pluginEvents/follow`，非 owner Peer 需授权），`initialBundleSnapshot` 改名（现为 `artifactBaseline(id)` + `rebuilt(id)`）。
 - **本次改动**：`lib/index.js`（门禁重写、路由 auth、mint 删除、token 剥除、`readHeader` 兼容 Headers、`inject` 加 `connection.authentication`）、`lib/lan-proxy.js`（`rewrite` 钩子、`stampProxyHeaders`）、`lib/landing.html`（去 mint、`hostOnly`）、`lib/client.js`（版本号）、`package.json`（1.8.0 / `engines.dsh=0.2.3-alpha.2` / Node `>=24.22.3`）、README ×2、测试（harness 与 A/B/C/F/N/N2/K4 段重写，新增路由 auth 与 token 剥除断言）、本文件。
-- **验证**：`npm test` **285/285**；真 Host e2e（§4.4）**45/45**（隔离 `DSH_HOME` + 仓库 junction，真 0.2.3-alpha.2 Host、真代理、真 WebSocket），覆盖"只带口令 cookie 的局域网客户端能拿到 SPA/RPC/事件流""旧 `?token=` 被剥掉""换端口后 `enforcement` 仍为 full"。
+- **验证**：`npm test` **291/291**；真 Host e2e（§4.4）**45/45**（隔离 `DSH_HOME` + 仓库 junction，真 0.2.3-alpha.2 Host、真代理、真 WebSocket），覆盖"只带口令 cookie 的局域网客户端能拿到 SPA/RPC/事件流""旧 `?token=` 被剥掉""换端口后 `enforcement` 仍为 full"。
 - **顺手修掉的一个 shutdown 假警报**：钉住/清除端口会排一个 `refresh().then(syncEnforcement)`，它可能在组合被销毁后落地，于是每次退出都打一行 `LAN fence patch failed, enforcement degraded`（e2e 日志里就是这样发现的）。`syncEnforcement` 现在先确认 `connection` 服务还在，不在就静默返回——真正的降级仍由 `/dsh-lan/status` 的 `enforcement` 字段报告。
 
 ### 1.7.2 — 对齐 DSH 0.2.2-rc.3（只改版本闸，功能不变）
