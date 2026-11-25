@@ -15,14 +15,14 @@
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-lan-tool?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
   <a href="https://www.npmjs.com/package/dsh-lan-tool"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-lan-tool?style=flat-square&amp;label=downloads&amp;color=2f6fed"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square"></a>
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.2-rc.3" src="https://img.shields.io/badge/DSH-0.2.2--rc.3-4c8dff?style=flat-square"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH 0.2.3-alpha.2" src="https://img.shields.io/badge/DSH-0.2.3--alpha.2-4c8dff?style=flat-square"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/MrMu666/dsh-lan-tool?style=flat-square&amp;label=release&amp;color=8957e5"></a>
   <a href="https://github.com/MrMu666/dsh-lan-tool/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/MrMu666/dsh-lan-tool?style=flat-square&amp;label=stars&amp;color=e3b341"></a>
 </p>
 
 ---
 
-> ⚠️ **Version requirement**: `1.7.2` supports DSH desktop **`0.2.2-rc.3`** only (`engines.dsh` pins it exactly; other versions are refused as `incompatible-version`). For older DSH releases use the matching older plugin — see [Releases](https://github.com/MrMu666/dsh-lan-tool/releases).
+> ⚠️ **Version requirement**: `1.8.0` supports DSH desktop **`0.2.3-alpha.2`** only (`engines.dsh` pins it exactly; other versions are refused as `incompatible-version`). For older DSH releases use the matching older plugin — see [Releases](https://github.com/MrMu666/dsh-lan-tool/releases).
 
 Open the same DeepSeek Harness from a phone, tablet, or another computer on your LAN: **a password is required before the page is shown**, while the host machine itself needs none.
 
@@ -38,7 +38,7 @@ Open the same DeepSeek Harness from a phone, tablet, or another computer on your
 2. **Fully quit the desktop app and reopen it** (the node half is loaded once per app run);
 3. Open Settings → General → "LAN access", **set a password** (at least 4 characters), then turn the switch on.
 
-> A brand-new release may be held back by pnpm's 24-hour window; install the version explicitly, e.g. `dsh-lan-tool@1.7.2`.
+> A brand-new release may be held back by pnpm's 24-hour window; install the version explicitly, e.g. `dsh-lan-tool@1.8.0`.
 >
 > Pairs well with [DSH-Launcher](https://github.com/MrMu666/DSH-Launcher) and [dsh-app](https://github.com/MrMu666/dsh-app).
 
@@ -71,6 +71,7 @@ Open the same DeepSeek Harness from a phone, tablet, or another computer on your
   - id: dsh-lan-tool
     disabled: true
   ```
+- **Windows install fails with `EPERM ... rename '...package.json.<random>' -> '...package.json'`**: the plugin package is fine; pnpm's atomic replacement of the profile manifest was briefly blocked by a third-party security product's real-time protection (Huorong on the machine tested on 2026-11-16). Add `%USERPROFILE%\.dsh\profiles` to that product's trusted/excluded directories, or temporarily disable real-time protection and retry; if it still fails, fully quit the desktop app and install with `dsh plugin --profile desktop add dsh-lan-tool@1.8.0`, then restore protection. Do not hand-edit the profile `package.json`, and do not patch pnpm for this.
 - **Phone shows `dsh web authentication required…`**: the URL carries a stale `?token=`. Use the clean address from the card; since 1.7.1 it also redirects to the password page automatically.
 - **A LAN page keeps saying "reconnecting"**: DSH changed its port. Refresh the page, or pin the LAN port in the card.
 

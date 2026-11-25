@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.7.2 ↔ DeepSeek Harness 桌面版 0.2.2-rc.3**（`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-16 实测 runtime.json 仍写 0.2.2-rc.1，而 asar 已是 0.2.2-rc.3）。本文件的运行时事实均已在 0.2.2-rc.3 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.2-rc.1 → 0.2.2-rc.3 的变更见 §7 的 1.7.2 条。**
+当前基线：**dsh-lan-tool 1.8.0 ↔ DeepSeek Harness 桌面版 0.2.3-alpha.2**（`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-24 实测 runtime.json 仍写 0.2.2-rc.3，而 asar 已是 `0.2.3-alpha.2`）。本文件的运行时事实均已在 0.2.3-alpha.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.2-rc.3 → 0.2.3-alpha.2 的认证重构（整个门禁换了落点）见 §3.6 与 §7 的 1.8.0 条。**
 
 ---
 
@@ -16,7 +16,7 @@ cordis.patch.yml  bundle 补丁：只有一条 insert 行，**故意不写 webse
 lib/index.js      node 半边（host 平面）：状态文件、防火墙、口令门、/lanapi、/dsh-lan/*、反代的装配与门禁
 lib/lan-proxy.js  局域网反向代理（v1.5.0 起"局域网访问"的实现本体）：按接口地址监听 + HTTP/WS 反代
 lib/client.js     浏览器半边：登录门、设置页「局域网访问」卡片、侧栏锁定按钮、工作区目录选择器（影子）
-lib/landing.html  门后落地页（口令 → /dsh-lan/unlock → /dsh-lan/mint → 干净 /）
+lib/landing.html  门后落地页（口令 → /dsh-lan/unlock → 设 cookie → 干净 /；没有 mint 步骤）
 LICENSE           MIT 许可证（Copyright © 2026 MrMu666）
 README.md / README.en.md   面向用户；**不放更新记录**
 test/loopback-gate.test.mjs   `npm test`（离线，自包含）
@@ -52,6 +52,7 @@ test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会�
 
 - `dsh-plugin-manager` 的 `reconcile()`（`@deepseek-ai/dsh-plugin-manager/lib/types/operations.js`）会把带 `dsh.bundle` 的新依赖自动追加进 `dsh.profile.bundles`。
 - CLI 需要**先退出桌面版**（`requireDesktopProfile` 只检查 profile 有没有初始化过，"fully quit"只是文案；真正的风险是运行中改写 `node_modules` 在 Windows 上被占用）。
+- **Windows 安装报 `EPERM: operation not permitted, rename '…\profiles\<p>\package.json.<随机数>' -> '…\package.json'`（2026-11-16 实测）**：不是插件包损坏，也不是 profile `package.json` 的权限/ACL 问题——实测该文件无独占句柄、ACL 为当前用户完全控制、同目录 `File.Move` 探测成功，且 Windows Defender 实时防护是关闭的。真正原因是**第三方安全软件的实时防护**（本机为 `火绒安全软件`：`HipsDaemon`/`HipsTray` 常驻）在 pnpm 写完 `package.json.<随机数>` 临时文件、准备 rename 覆盖目标的瞬间短暂锁住目标，pnpm 的 manifest 写入没有重试，于是抛出 EPERM。DSH 的 `@deepseek-ai/dsh-atomic-write` 对 Windows 的 `EACCES`/`EBUSY`/`EPERM` 有 8 次退避重试（20→200ms），但 pnpm 自己的 writer 不受这层保护，所以插件和 DSH 代码都没坏。**解法**：把 `<DSH_HOME>\profiles` 加入火绒（或其它安全软件）的信任/排除目录，或临时关闭实时防护后重试；也可完全退出桌面版后用 `dsh plugin --profile desktop add dsh-lan-tool@1.7.2` 安装，装完恢复防护。**不要**手改 profile `package.json`，不要给 pnpm 打补丁，也不要因此给插件加安装脚本。瞬时锁直接重试也可能成功。
 - **刚发布的版本会被 pnpm 的"发布年龄"策略挡住（2026-10-12 实测事故，排查"修了却没生效"先看这条）**：pnpm 默认不安装"太新"的包，而 `dsh-plugin-manager` 只会给**它实际装到的那个版本**在 profile 的 `pnpm-workspace.yaml` 里补一条 `minimumReleaseAgeExclude`。于是当天连着发布 1.4.0 → 1.4.1 → 1.4.2 之后，用户在 Plugins 页输入包名**每次都解析回 1.4.0**（日志现象：`+ dsh-lan-tool ^1.4.0`、`Progress: resolved … reused 1`；证据文件：`<DSH_HOME>/profiles/<profile>/pnpm-workspace.yaml`），看起来就是"新版本没修好"，实际是旧版本被反复装上、重启多少次都一样。
   - **判定**：`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 里有没有目标版本 ＋ 安装日志里的 `^<版本>`。
   - **解法**：把目标版本加进该名单（如 `- dsh-lan-tool@1.4.2`），或在 Plugins 页/CLI 显式写 `包名@版本`。**发新版并希望用户立刻装到时，先补这一条**，否则对方拿到的还是上一次的版本。
@@ -63,11 +64,11 @@ test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会�
 
 ### 2.1 本机（作者机）开发循环
 
-本机状态：桌面版 **0.2.2-rc.3**（2026-11-16 的 nightly 更新；`~/.dsh/dsh-runtimes/.../runtime.json` 仍写 0.2.2-rc.1，是旧缓存），`DSH_HOME=C:\Users\MyBook\.dsh`，活动 profile = `desktop`（`profiles/` 下只有它）。**端口不再是 19387**：0.2.1 的桌面启动器传 `--port 0`（由 OS 分配），所以每次启动的端口都不同 —— 要连它请从窗口标题、日志或 `/dsh-lan/status` 的 `port` 取当前值（本文档里出现 `19387` 的地方都是离线自测的固定桩端口，不是线上值）。
+本机状态：桌面版 **0.2.3-alpha.2**（2026-11-23 的 nightly 更新；`~/.dsh/dsh-runtimes/.../runtime.json` 仍写 0.2.2-rc.3，是旧缓存），`DSH_HOME=C:\Users\MyBook\.dsh`，活动 profile = `desktop`（`profiles/` 下只有它）。**端口不再是 19387**：0.2.1 的桌面启动器传 `--port 0`（由 OS 分配），所以每次启动的端口都不同 —— 要连它请从窗口标题、日志或 `/dsh-lan/status` 的 `port` 取当前值（本文档里出现 `19387` 的地方都是离线自测的固定桩端口，不是线上值）。
 
 **版本闸门（0.2.1 新增，先看这条再决定 `package.json` 怎么写）**：`dsh-app-boot` 的 `unmetRequirements()` 只校验**两处** —— 有 `engines.dsh` 时**只**看它（peer 全部忽略），否则逐个检查 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 `peerDependencies`；比较用 `semver.satisfies(..., { includePrerelease: true })`。不满足时 plugin-manager 会以 `incompatible-version` 拒绝安装/启用，要用 `dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <rt> --accept-risk` 授权。
 
-**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.7.2）写的是 `"engines": { "dsh": "0.2.2-rc.3" }`（**精确值，不是范围**）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
+**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.8.0）写的是 `"engines": { "dsh": "0.2.3-alpha.2" }`（**精确值，不是范围**）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
 
 ```powershell
 $src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\desktop\node_modules\dsh-lan-tool'
@@ -113,7 +114,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 官方 `dsh-client-ui-directory-picker-browse` 注入的就是 `uiWorkspace`。**目录枚举/新建目录调用必须走 `uiWorkspace`**，`workspaces` 只能作为旧版回退（`pickerBrowse()` 就是按这个顺序取的）。
 
-**v1.5.8 的唯一例外（先读这条再改选择器）**：DSH 0.2.1 起 Host 必须绑回环，`dsh-host-directory-picker-auto` 因此**只组合 `native`**（`bindHost` 是回环 + win32/darwin ⇒ native；只有 `allowsRemoteAuthorities` 才 browse）。也就是说 `directoryPicker/list` 这条远端方法**根本不存在**，`uiWorkspace.listDirectory()` 永远答 `directory-picker/unavailable`——插件影子出来的 `directoryFlow` 对话框如果还调它，"新建工作区"就会报"无法打开文件夹 … directory browse failed"。所以对话框的**第一数据源是本插件自己的 `/dsh-lan/fs/list` 与 `/dsh-lan/fs/mkdir`**（node 半边用 `opendir`/`mkdirSync` 实现，返回与官方 `DirectoryListing` 相同的形状），拿不到（404 = 旧 node 半边）才回退 `uiWorkspace`。这两个路由和别的 LAN 端点同一道门：`lanFileAccess()` = 主机自己 / 口令持有者 / mint 出来的浏览器会话——代理对 `/dsh-lan/*` 是无条件放行的（落地页要用），所以门必须做在路由里。**命名空间里的未知子路径由 `/dsh-lan/fs` 前缀路由回 JSON 404（1.6.0）**：0.2.1 起（含 0.2.2-rc.3）的 `frontend-static` 占了 webserver 的 **fallback 席位**，没被路由命中就回 SPA 的 `200 text/html`，客户端再也分不清"旧半边没有这个端点"和"这是一个页面"；`webServer.match()` 先查 exact 表再按最长前缀匹配，所以前缀不会盖住上面两条 exact 路由。
+**v1.5.8 的唯一例外（先读这条再改选择器）**：DSH 0.2.1 起 Host 必须绑回环，`dsh-host-directory-picker-auto` 因此**只组合 `native`**（`bindHost` 是回环 + win32/darwin ⇒ native；只有 `allowsRemoteAuthorities` 才 browse）。也就是说 `directoryPicker/list` 这条远端方法**根本不存在**，`uiWorkspace.listDirectory()` 永远答 `directory-picker/unavailable`——插件影子出来的 `directoryFlow` 对话框如果还调它，"新建工作区"就会报"无法打开文件夹 … directory browse failed"。所以对话框的**第一数据源是本插件自己的 `/dsh-lan/fs/list` 与 `/dsh-lan/fs/mkdir`**（node 半边用 `opendir`/`mkdirSync` 实现，返回与官方 `DirectoryListing` 相同的形状），拿不到（404 = 旧 node 半边）才回退 `uiWorkspace`。这两个路由和别的 LAN 端点同一道门：`lanFileAccess(ctx, req, peer)` = 主机自己 / 口令持有者 / DSH 已认证的 Peer——代理对 `/dsh-lan/*` 是无条件放行的（落地页要用），所以门必须做在路由里。**命名空间里的未知子路径由 `/dsh-lan/fs` 前缀路由回 JSON 404（1.6.0）**：0.2.1 起（含 0.2.2-rc.3）的 `frontend-static` 占了 webserver 的 **fallback 席位**，没被路由命中就回 SPA 的 `200 text/html`，客户端再也分不清"旧半边没有这个端点"和"这是一个页面"；`webServer.match()` 先查 exact 表再按最长前缀匹配，所以前缀不会盖住上面两条 exact 路由。
 
 ### 3.3 插槽（slot）机制要点
 
@@ -167,11 +168,15 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 - **`/lanapi` 重入必须传 peer**（v1.5.7）：`connection.createSharedFetchHandler("/api").fetch(request)` 少一个参数时，通道分发读 `peer.signal` 直接抛 `gateway/internal: Cannot read properties of undefined (reading 'signal')` —— 表现为"设置页里所有依赖远端命名空间的东西都报不可用"（内置插件页就是一句 `插件暂时不可用。`）。正确写法是 `.fetch(request, connection.browserPeer)`。
 - **版本握手**：`/dsh-lan/status` 报 `version`，客户端请求带 `x-dsh-lan-client`；不一致说明"装了没重启"（node 半边没换代码），客户端在设置卡片与控制台写明、服务端 log 一行。
 - 口令门拒绝时会打一行去重日志 `password gate: … — peer=… is not an address of this machine (host=…)`：万一主机又被挡住，这行日志直接指出被判成"非本机"的 peer/host（1.4.0 时这种事故在日志里是完全静默的）。
-- **唯一闸门**是 `connection.requestRejection(request)`（`@deepseek-ai/dsh-client-connection/lib/index.js`：Host/Origin 围栏 + 浏览器会话），`admit()` 调它，RPC 路由与 fetch/WS 处理器都走 `admit` ⇒ 直接替换实例方法即可覆盖全部入口。
-- `browserAuth.authorizeIndex(req, res, secure = false)` 只认 `GET /` 上的 token；兑换成功写 authority 绑定的 `HttpOnly; SameSite=Strict` cookie 并 303 到 `./`。**0.2.1 起（含 0.2.2-rc.3）第 3 个参数是官方的**（`HostConnectionService.authorizeIndex` 传 `webServer.protocol === "https:"`，BrowserAuth 用它决定 cookie 的 `Secure`）：我们的 `patchedAuthorize` 必须原样转发它（1.6.0 起已转发；1.5.9 只传两个参数，HTTP 部署无影响、TLS 部署会把 cookie 降级成非 Secure）。`connection.authenticatedUrl(base)` 给 URL 挂进程 token（token 是**进程内存**随机值，磁盘上不存在）。
-- **桌面壳的启动握手绝不能被 `patchedAuthorize` 短路（1.4.5 的教训，改 `patchedAuthorize` 前必读）**：桌面端启动时 `main.js` 的 `authenticateWebHost()` 会 `fetch(ready.url, { redirect:"manual" })` 并**要求 `status === 303 && set-cookie !== null`**，否则抛 `Error: Desktop Host authentication failed`，主进程弹出"DeepSeek Harness is unavailable"对话框（第三个按钮是"禁用第三方插件，备份 profile 补丁并重启"）。而 1.4.1–1.4.4 的 `patchedAuthorize` 写的是 `if (local) return true` —— **主机自己一律直接放行**，于是壳拿到的是 `200 + text/html`（走 `frontend-static` 的 `serveStatic()` 直接下发 SPA），启动必失败。触发条件是"**局域网开**的时候重启桌面端"：`boundToAllInterfaces(ctx)` 为真才装这道闸，而这个覆盖块**持久化在 profile 补丁里**，所以**每一次**启动都会失败，用户只能点那个"禁用第三方插件"按钮（它会把 LAN 块一起删掉）才能进应用 —— 进去后再开 LAN，下次启动又坏，表现为"反复发作"。**现行契约（1.4.5）**：本机分支里，`GET /` 且 `searchParams.has("token")` 时**必须委派** `origAuthorizeIndex.call(browserAuth, req, res)`，让它自己判 `303`/`401`；其余本机请求仍 `return true`。这个让渡是安全的：带进程 token **就等于**是主机（token 只在进程内存里），伪造 token 由官方 `tokenMatches()` 直接 401。**口令闸 `requestRejection` 一行都不用动**（它对本机从来都是 `return undefined`）。回归断言见 `test/loopback-gate.test.mjs` N 段。
-- **`ensureFencePatched` 的重入护栏必须同时比 connection 与 browserAuth**（1.4.5）：只比 `wrap.connection === connection` 时，若将来出现"同一个 connection 换了一个已打补丁的 browserAuth"，`origAuthorizeIndex` 会捕获到 `patchedAuthorize` 自己，形成嵌套委派（先 303 再被 `serveStatic` 写 200）——正是上面那个崩溃以更难查的形态复现。当前 cordis 把二者成对重建，所以到不了，但护栏要挡住这个方向。
-- 官方围栏 `isTrustedApiRequest` 只在 loopback 或命中 `trustedHosts` 时放行，而 `trustedHosts` 是**启动时采样一次**的 LAN 字面量（换 IP/后开开关都可能过期）；本插件用口令门在 `requestRejection` 层放行，因此不依赖它（这也是 `/lanapi` 至今保留的原因之一）。
+- **0.2.3-alpha.1 起只有一个准入路径（改门禁前必读）**：`路由 auth（缺省 required）→ webserver/authorize（bail）→ connection.isTrustedRequest()（Host/Origin 围栏）→ connection.authentication.authenticate()（凭据 → Peer）`。`requestRejection` / `browserAuth` / `authorizeIndex` / `authenticatedUrl` / `isTrusted` / `admitConnection` **全部移除**（官方指南归档在 `upgrade-guide/v0.2.2-rc.2/connection-page-peer`，但按 tag 核对：rc.3、rc.4 仍是旧 API，实际落地在 0.2.3-alpha.1）。本插件只包这两个**公开实例方法**：`isTrustedRequest(request)`（门口：本方代理盖了戳且门开着 ⇒ `true`）与 `connection.authentication.authenticate(request)`（凭据：戳 + 口令 ⇒ `{ peer: connection.browserPeer }`，即 DSH 自己浏览器会话返回的那个 owner Peer）。`admit()` 依次调用这两者，所以**不要再单独 patch `admit`**；`webserver/authorize` 的监听器也是读实例方法，同样被覆盖。
+- **判据是"戳"，不是对端地址**：`webserver/authorize` 交给监听器的是 facts 对象，`socket` 只有 `{ destroyed }`、**没有 remoteAddress**，所以 `isLocalRequest()` 在那里不可能工作。改用 `viaProxy()`：`lib/lan-proxy.js` 每进程随机生成 `x-dsh-lan-via`，转发时**先删客户端自带的同名头**再盖自己的章；`viaProxy()` 同时认 node headers 对象与 WHATWG `Headers`。**伪造 `Host: 127.0.0.1` 已经没有意义**（围栏不再看 Host）。
+- **直连部署的兼容**：`dsh web --host <lan-ip>`（没有代理、没有戳）仍可用口令，但只在 `origIsTrusted(request) === true` 时——即 DSH 自己已经承认那个 authority（监听器自己的绑定地址）。伪造的 Host 拿不到 Peer。
+- **每条路由都必须声明 `auth`**：`WebRoute.auth` 缺省是 `required`，而 `anonymous` **仍会先过围栏**。所以 `/dsh-lan/status`、`/dsh-lan/configure`、`/dsh-lan/unlock`、`/dsh-lan/`、`/dsh-lan/diag`、`/dsh-lan/fs/list`、`/dsh-lan/fs/mkdir` 与 `/dsh-lan/fs` 前缀全部写明 `auth: "anonymous"`，真正的门禁在各 handler 里（`isHostOnlyRequest()` / `hasLanCredential()` / `lanFileAccess(ctx, req, peer)`）；`/lanapi` 保持缺省（required），因为它的 handler 需要一个真 Peer。
+- **口令就是凭据，mint 已删除**：`connection.authenticatedUrl` 不存在了，落地页 `unlock` 成功后直接 `location = "/"`；`dsh-lan-key` cookie 由 `authenticate` 直接认，SPA 的 fetch 与 WebSocket 都会带上它。`?token=` 在代理处被 `stripTokenFromRequest()` 剥掉——DSH 的 token provider 在**路由之前**拦截 `GET /?token=`，旧书签不剥就是一行 401 纯文本。
+- **桌面壳握手已换（1.8.0 起与 HTTP 无关）**：0.2.3 的桌面端改成 IPC 传 secret + `dsh-desktop-session` cookie + `DesktopAuthentication` provider（`dsh-host-authentication-desktop`）。1.4.5 那条"`patchedAuthorize` 绝不能被短路"的历史包袱**自动消失**，`patchedAuthorize` 本身也不存在了，别再按旧记录去找。
+- 客户端 `local` 仍是**peer 语义**（经代理的局域网设备也拿到 loopback 对端 ⇒ `local: true`），所以"能不能改设置"看 `hostOnly`（`isLocalRequest && !viaProxy`）。落地页的"主机直接进"快捷方式必须判 `hostOnly`：判 `local` 会让局域网设备在 `/` 与落地页之间来回跳（1.7.x 的隐藏 bug，1.8.0 修）。
+- **重入护栏**：`fenceWraps` 同时记 `connection` 与 `authentication` 两个身份；只比 `connection` 会在"同一个 connection、换了一个 authentication 实例"时把补丁叠两层。
+- 官方围栏 `isTrustedApiRequest` 只在 loopback 或命中 `trustedHosts` 时放行，而 `trustedHosts` 是**启动时采样一次**的 LAN 字面量（换 IP/后开开关都可能过期）；本插件用口令门在 `isTrustedRequest` 层放行，因此不依赖它（这也是 `/lanapi` 至今保留的原因之一）。
 - `/lanapi`（前缀路由 + 客户端 `/api`→`/lanapi` 改写）在 0.2.0 已**不是必需**（没有按方法的 loopback 专属层），属**可选简化项**；删它需要一次端到端局域网验证（把走它的官方界面都过一遍），**没做那次验证前保留**。
 - HMR 让"改开关即时生效"成立，但有前提：`dsh-hmr` 要求进程带 `--expose-internals`、`profileContext` 已 provide、且 `appReady` 就绪（桌面启动器实测满足；其它启动路径未验证）。卡片保留"正在生效"提示，未生效时提示重启。
 
@@ -192,7 +197,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**279 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（主机 4 种对端 × 6 种 Host 全放行、局域网对端伪造 `Host: 127.0.0.1` 仍 403、`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**273 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（非代理请求一律交回 DSH 自己的围栏；只有"本方代理盖了戳"的请求才被信任，且只有"戳 + 口令"才拿到 owner Peer；未盖章的请求即使带对口令也拿不到；错口令/无口令一律回落 DSH；直连部署只在 DSH 自己承认的 authority 上认口令；`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、路由 `auth` 声明（8 条 `anonymous` + `/lanapi` 保持 required）、`?token=` 剥除、代理 `rewrite` 钩子、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -200,9 +205,9 @@ node 半边可以直接在 Node 里跑：`DSH_HOME` 指向**临时目录**，把
 
 - **迁移**：预置旧 install/toggle 块 → `apply()` → 断言块被剥除、用户条目保留、YAML 仍可解析、`legacyCleanupDone` 落盘、二次 apply 不重写文件；
 - **开关**：`configure({enabled:true})` → 断言补丁里**恰好一条** `- id: webserver` 且五键齐全；来回切三次后仍只有一条；关掉后该行消失且 YAML 合法；
-- **门禁**：把 mock 的 `webServer.host` 切到 `0.0.0.0`，直接调 `connection.requestRejection(...)`，断言「无口令 403 / loopback 放行 / 伪造 `Host: 127.0.0.1` 被拒 / 正确口令（头或 cookie）放行」；
+- **门禁**：把 mock 的 `webServer.host` 切到 `0.0.0.0`，直接调 `connection.isTrustedRequest(...)` 与 `connection.authentication.authenticate(...)`，断言「非代理请求一律委派 / 盖章通过围栏 / 盖章+口令拿到 browserPeer / 错口令回落官方 / 未盖章即使口令对也回落」；
 - **`[]` 占位符**：profile 补丁只有 `[]` 时开关仍要产出合法 YAML，关掉后回到 `[]`；
-- **路由**：unlock（含限流）、mint（302 到 token URL）、landing、`/lanapi` 口令门、`configure` 仅 loopback。
+- **路由**：unlock（含限流）、landing（无 mint）、`/dsh-lan/fs/*`、`/lanapi` 口令门、`configure` 仅主机；以及每条路由的 `auth` 声明。
 
 YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉眼：
 `yaml.parse(text, { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (v) => v }] })`。
@@ -231,7 +236,8 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 - 在 `%TEMP%` 建一个一次性 `DSH_HOME`，profile 文本文件从线上 profile **复制**，`node_modules/dsh-lan-tool` 用 **junction 指向仓库工作树**（所以测的就是当前代码，不需要安装/发布），并把 `dsh-lan-tool` 追加进 `dsh.profile.bundles`；
 - 写 `dsh-lan.json` 时**删掉真实口令**（`passwordHash`/`salt`），只置 `lanEnabled: true`，口令由测试自己在启动后从**主机侧**调 `/dsh-lan/configure` 设一个新值 —— 所以这个测试不需要、也拿不到用户的口令；
-- 用 §7 1.4.5 那条"假 main 进程"手法启动真 Host（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` + asar 内的 `dsh-desktop-host`），收到 `ready` 后按顺序验证 37 项：代理起来且 DSH 仍在回环 / 无凭据的 `/` 302 到落地页、`/api` 403 / 落地页可达 / 错口令拒、对口令过 / mint 302 到**局域网 authority** 的令牌 URL / 令牌兑换 303 + 绑定该 authority 的 cookie / 带 cookie 能拿到 SPA / **补丁里始终没有 `webserver` 覆盖**；
+- 用 §7 1.4.5 那条"假 main 进程"手法启动真 Host（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` + asar 内的 `dsh-desktop-host`），**并按 0.2.3 的约定扮演桌面壳**：进程一起来就生成 43 字符 base64url secret、经 IPC 发 `{type:"desktop-auth", secret}`（重复发送是硬失败，已加幂等守卫），收到 `{type:"ready", url}` 后把 `dsh-desktop-session=<secret>` 当宿主凭据。之后按顺序验证 **41 项**：宿主凭据被接受且缺凭据时确实 401 / 代理起来且 DSH 仍在回环 / `enforcement === "full"`（两方法补丁真的装上了）/ 无凭据的 `/` 302 到落地页、`/api` 403 / 落地页不再调用 mint / **无凭据也能取到 `manifest.webmanifest` 与 `icon-192.png`**（浏览器抓 manifest 时**不带 cookie**，代理挡了就等于 PWA 装机静默失效）/ 错口令拒、对口令过 / **只带 `dsh-lan-key` 就能拿到 SPA、RPC 与 WebSocket 101，且断线后可重连** / 旧 `?token=` 对有口令者被剥掉、对其他人回落地页 / 主机专用端点拒绝代理请求 / `/lanapi` 两侧一致 / **补丁里始终没有 `webserver` 覆盖** / 钉住的 LAN 端口生效且换端口后栅栏仍是 full；
+- 加 `DSH_E2E_BROWSER=1` 会再跑一段**真无头 Chrome**（CDP）检查：同一台机器上 `local/desktop`、`lan/desktop`、`lan/phone`(390px) 三个 origin 各开一个 target，采样控制台异常、失败请求、≥400 响应与 WebSocket 帧。**判据是三个 origin 都 `console=0 exceptions=0 failed=0 bad=0`、WS 握手 101 且收到会话帧、`hasGate=false`、`hasComposer=true`，并打印 `local vs lan identical`**（手机端 `sidebarCollapsed=true` 是官方窄屏抽屉，不是缺陷）。2026-11-25 实测：local/lan 文本一致（textLen 110/110）、三者各收到 38 KB 会话帧；**正是这一段抓出了 manifest 的 403**；
 - 收尾会**优雅关闭**子进程（IPC `shutdown` → 5 秒后 SIGKILL 兜底）：直接 `kill()` 在 Windows 上会留下孤儿 Host，而它还占着局域网监听端口，下一次运行就会撞车（踩过一次）。
 
 **改 `lib/lan-proxy.js`、`makeLanAdmit()`、或任何与代理装配相关的代码后，跑它**（`npm test` 只覆盖代理的传输与门禁语义，跑在 `127.0.0.2` 上，不进真 Host）。
@@ -249,7 +255,8 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - **写任何 `webserver` 覆盖**（0.2.1 起这是硬红线：通配被 schema 拒绝而 `webserver` 是 required ⇒ 整个应用起不来；具体非回环地址又会打断桌面壳的 127.0.0.1 握手。见 §3.5）。
 - **按 `ctx.webServer.host === "0.0.0.0"` 判断开关状态**（0.2.1 起不可能成立；开关的意愿在 `dsh-lan.json` 的 `lanEnabled`，实况是"代理在听"）。
 - **把 `admit` 之外的门禁塞进代理**（路径策略只该在 `makeLanAdmit()` 一处；代理模块自身不做任何策略判断，这样它才能被单测驱动）。
-- **忘了令牌兑换的豁免**：mint 流程的最后一跳是 `GET /?token=…` 打到代理上，若门禁只认 cookie，局域网登录就永远完不成（`test/lan-proxy-e2e.mjs` 就是这么抓到的）。
+- **忘了把 `?token=` 剥掉**：DSH 0.2.3 的 token provider 在**路由之前**拦截 `GET /?token=`，局域网端已经不需要它；代理不剥（`stripTokenFromRequest`），旧书签就是一行 401 纯文本（1.7.1 用另一条路修过同一个现象）。
+- **以为局域网端还需要 DSH 的会话 cookie**：1.8.0 起口令就是凭据（`authenticate` 直接返回 `browserPeer`），落地页不 mint、`/dsh-lan/mint` 已删除；`/` 能不能打开取决于代理门口的 `dsh-lan-key` cookie。
 - 用 `config.profile ?? "web"` 去找 profile 补丁（必须用 `profileContext`）。
 - 手工编辑 profile 补丁里的受管块，或手工恢复安装脚本那套"正则改 YAML"（补丁里现在**不该**有任何本插件的块；`clearLanBlock()` 只负责清理历史遗留）。
 - 试图在局域网页面上"解锁"官方设置栈（`settingsScope` 已不存在，见 §3.4）。
@@ -298,10 +305,10 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 ### 6.1 机制
 
-- 局域网模式下，**没有凭据的非 loopback 客户端**请求 `GET /` → **302 `/dsh-lan/`**（`lib/index.js` 的 `patchedAuthorize`）；要真正拿到 SPA，请求必须带上 **DSH 自己的会话 cookie**。
-- 那个 cookie 是 **`HttpOnly; SameSite=Strict`**，由一次**隐藏 fetch 的重定向链**种下（`/dsh-lan/mint` 302 → token URL → `/`；`lib/landing.html` 有注释说明必须跟随跳转，`redirect:"manual"` 会走不通）。
-- 因此：**只要承载页面的环境把 GUI 当作「跨站第三方内容」，这个 cookie 就会被现代 WebView / 浏览器的跟踪防护丢弃或分区**，链路永远走不完。
-- 1.3.x 的落地页"有 key 就跳"会把这个放大成**无限重定向**（口令页不断闪烁、无法输入）。**1.4.0 已修**：`lib/landing.html` 用 `sessionStorage` 的 `dsh-lan-mint-hops` 计数，超过 `MAX_HOPS=2` 就停止自动跳转、停在表单并提示"浏览器没有保存登录凭据"。所以环境问题现在最多是"每次都要输口令"，不会再变成"页面无法操作"。
+- 局域网模式下，**没有 `dsh-lan-key` cookie 的客户端**请求 `GET /` → 代理层 **302 `/dsh-lan/`**（`lib/lan-proxy.js` 的 `refuse()`，路径策略在 `makeLanAdmit()`）。落地页 `unlock` 成功后由页面自己写 `dsh-lan-key` cookie，随后 `/` 直接进 SPA。
+- 1.8.0 起**不再有第二跳**：DSH 的会话 cookie 由它自己的 token/desktop provider 负责，与局域网入口无关；`POST /dsh-lan/mint` 已删除。所以"跨站第三方上下文"影响的只是这一个 `dsh-lan-key` cookie。
+- 因此：**只要承载页面的环境把 GUI 当作「跨站第三方内容」，这个 cookie 就会被现代 WebView / 浏览器的跟踪防护丢弃或分区**，于是每次都要重新输口令。
+- 1.3.x 的落地页"有 key 就跳"会把这个放大成**无限重定向**（口令页不断闪烁、无法输入）。**1.4.0 已修、1.8.0 保留**：`lib/landing.html` 用 `sessionStorage` 的 `dsh-lan-mint-hops` 计数，超过 `MAX_HOPS=2` 就停止自动跳转、停在表单并提示"浏览器没有保存访问凭据"。所以环境问题现在最多是"每次都要输口令"，不会再变成"页面无法操作"。
 
 ### 6.2 判定口径与责任划分
 
@@ -316,12 +323,27 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 ### 6.3 复现 / 排查手法（只读，勿在用户实例上做写操作）
 
 - 无头 Chrome + CDP：父页面从 `http://localhost:3099`（与目标不同 host）内嵌 `http://<LAN-IP>:<端口>`，即构造出「跨站 iframe」形态；用 `Target.attachToTarget` 挂到 iframe 的 target 上执行表达式，逐秒采样其 `location.href`、是否存在 `input[type=password]`、`document.cookie`，以及 `sessionStorage["dsh-lan-mint-hops"]` 是否已到上限。
-- **不要**为了「跑通」而猜或试口令：错误口令下 `POST /dsh-lan/mint` 只会 403（足够确认链路形态）；`dsh-lan-key` 也无法用 JS 伪造成功路径（校验在服务端）。
+- **不要**为了「跑通」而猜或试口令：错误口令下 `POST /dsh-lan/unlock` 只回 `{ ok: false }`（HTTP 200，足够确认链路形态）；`dsh-lan-key` 也无法用 JS 伪造成功路径（校验在服务端）。
 - 收尾：停掉无头 Chrome、删临时 profile 与探针脚本。
 
 ---
 
 ## 7. 历史修复（防回归）
+
+### 1.8.0 — 适配 DSH 0.2.3-alpha.2 的认证重构（门禁换挂接点，落地页去掉 mint）
+
+- **背景**：用户更新到桌面版 0.2.3-alpha.2（rc.3 → rc.4 → rc.5 → alpha.1 → alpha.2，2361 commits）。alpha.1 的"Web 连接模式远程登录 + 标准化连接鉴权 API 供插件注册"就是这次重构：Connection 把认证做成 Provider 注册表，**移除** `requestRejection` / `browserAuth` / `authorizeIndex` / `authenticatedUrl` / `isTrusted` / `admitConnection`，WebServer 每条路由新增 `auth: 'anonymous' | 'required' | 'deny'`（缺省 `required`），授权统一走 `webserver/authorize`。⇒ **1.7.2 的口令门在 0.2.3 上连一个补丁都装不上**（`ensureFencePatched` 第一步就返回 false），即使强行 `allow-version` 也会出现"设置卡绿灯、局域网全 403"的假象。
+- **新门禁（只包两个公开实例方法）**：`connection.isTrustedRequest(request)` —— 门开着且 `viaProxy(request)` 为真 ⇒ `true`；`connection.authentication.authenticate(request)` —— 门开着、有戳、口令对 ⇒ `{ peer: connection.browserPeer }`。`admit()` 与 `webserver/authorize` 的监听器都读实例方法，所以两个补丁覆盖全部入口，**不再 patch `admit`**。直连部署（`dsh web --host <ip>`，无代理无戳）额外允许 `origIsTrusted(request) === true` 的情况。
+- **判据从"对端地址"改成"代理戳"**：`webserver/authorize` 给的 facts 对象 `socket` 只有 `{ destroyed }`，没有 `remoteAddress`。`viaProxy()` 同时认 node headers 与 WHATWG `Headers`；`lan-proxy.js` 新增 `stampProxyHeaders()`（测试用）与 `rewrite` 钩子。
+- **路由声明 `auth: "anonymous"`**：状态/配置/解锁/落地页/诊断/两个 fs 路由 + `/dsh-lan/fs` 前缀（共 8 条）。`anonymous` 仍会先过围栏，所以真正起作用的是 `isTrustedRequest` 补丁 + handler 内检查。`/lanapi` 保持缺省（required），`routeHandler` 现在把 `peer` 透传给 handler，`lanFileAccess(ctx, req, peer)` 用它替代已删除的 `browserAuth.isAuthenticated`。
+- **mint 删除**：`/dsh-lan/mint`、`connection.authenticatedUrl` 的用法全部移除；`landing.html` 在 `unlock` 成功后直接跳 `/`，并把"主机直接进"的判断从 `data.local` 改成 `data.hostOnly`（局域网设备经代理也有 loopback 对端，`local` 恒真 ⇒ 旧判断会让它在 `/` 与落地页间来回跳，这是 1.7.x 的隐藏 bug）。
+- **`?token=` 剥除**：`stripTokenFromRequest()` 挂在代理的 `rewrite` 上。DSH 的 token provider 在路由之前拦截 `GET /?token=`，旧书签不剥就是一行 401 纯文本。
+- **无凭据的 Web App 资源**：`manifest.webmanifest` 与主屏图标（`icon-*.png`）必须放行（`PUBLIC_WEB_ASSET`），因为浏览器抓 `<link rel="manifest">` 时**按规范省略凭据**；代理挡了它，页面照常渲染，但 PWA 安装会静默失效。这一条是 e2e 的**浏览器阶段**抓出来的（`403 /manifest.webmanifest`，本地 200、局域网 403 的唯一差异），离线测试永远看不到。
+- **桌面壳握手已变**：0.2.3 改成 IPC 传 secret + `dsh-desktop-session` cookie + `DesktopAuthentication` provider，`authenticateWebHost()` 的 303/Set-Cookie 契约消失；1.4.5 的历史包袱与 `patchedAuthorize` 一起作废。
+- **客户端半边几乎不变**：`__ModuleLoader__.load`、`/plugins/<包名>/client.js`、slot 注册（`priority`/`order`/`registrant`）、`uiWorkspace`/`workspaces`、`connection` handle、`__DSH_TRANSPORT__.ownsHost`、`settings.general.item`、`sidebar.footer.action`、两个 `directoryFlow` 洞都在；`apply(ctx)` 不读第二参，`SyncedConfig` 变化无影响。**唯一要注意**：`/plugins/events` 已删除（调试改用 `pluginEvents/follow`，非 owner Peer 需授权），`initialBundleSnapshot` 改名（现为 `artifactBaseline(id)` + `rebuilt(id)`）。
+- **本次改动**：`lib/index.js`（门禁重写、路由 auth、mint 删除、token 剥除、`readHeader` 兼容 Headers、`inject` 加 `connection.authentication`）、`lib/lan-proxy.js`（`rewrite` 钩子、`stampProxyHeaders`）、`lib/landing.html`（去 mint、`hostOnly`）、`lib/client.js`（版本号）、`package.json`（1.8.0 / `engines.dsh=0.2.3-alpha.2` / Node `>=24.22.3`）、README ×2、测试（harness 与 A/B/C/F/N/N2/K4 段重写，新增路由 auth 与 token 剥除断言）、本文件。
+- **验证**：`npm test` **273/273**；真 Host e2e（§4.4）**41/41**（隔离 `DSH_HOME` + 仓库 junction，真 0.2.3-alpha.2 Host、真代理、真 WebSocket），覆盖"只带口令 cookie 的局域网客户端能拿到 SPA/RPC/事件流""旧 `?token=` 被剥掉""换端口后 `enforcement` 仍为 full"。
+- **顺手修掉的一个 shutdown 假警报**：钉住/清除端口会排一个 `refresh().then(syncEnforcement)`，它可能在组合被销毁后落地，于是每次退出都打一行 `LAN fence patch failed, enforcement degraded`（e2e 日志里就是这样发现的）。`syncEnforcement` 现在先确认 `connection` 服务还在，不在就静默返回——真正的降级仍由 `/dsh-lan/status` 的 `enforcement` 字段报告。
 
 ### 1.7.2 — 对齐 DSH 0.2.2-rc.3（只改版本闸，功能不变）
 
@@ -338,6 +360,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - **本次只改**：`package.json` 的 `version=1.7.2`、`engines.dsh=0.2.2-rc.3`、`dsh.compatibility.dsh=0.2.2-rc.3`、`dshReleases` 只留 `0.2.2-rc.3`；两处 `PLUGIN_VERSION`；README 的版本声明/安装示例；测试 `SUPPORTED_DSH`；本文件的基线。**没有改**门禁、代理、防火墙、路由、选择器、`dsh-lan.json` 格式或任何运行时行为。
 - **验证**：`npm test` **279/279**；真 Host e2e **37/37**（rc.3；见 §4.4）。
 - **实机注意**：升级 DSH 后 profile 的 `dsh.profile.bundles` 可能仍没有 `dsh-lan-tool`（本机 2026-11-16 实测确实没有）；装好 1.7.2 后要在 Plugins 页重新启用，再完全退出重启。
+- **安装注意（2026-11-16）**：本机首次装 1.7.2 时 pnpm 报 `EPERM … rename package.json.<随机数> -> package.json`，插件包本身完好；根因是火绒安全软件的实时防护锁住原子替换目标，处理办法见 §2.1 对应条目。
 
 ### 1.7.1 — 局域网端的过期 token URL 不再死在 401
 

@@ -50,30 +50,17 @@ button:disabled{opacity:.5;cursor:default}
 			body: JSON.stringify({ password: password })
 		}).then(function (r) { return r.json().then(function (d) { return r.ok && d.ok === true; }); }).catch(function () { return false; });
 	}
-	function mint(password) {
-		// Follow redirects (default): mint 302 -> token URL 303 (this hop
-		// mints the DSH cookie) -> / 200. A final 2xx means the whole chain
-		// completed. NOTE: redirect:"manual" must NOT be used here — an
-		// unfollowed 302 never requests the token URL, so no DSH cookie is
-		// ever minted and / would keep answering 401.
-		return window.fetch("/dsh-lan/mint", {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ password: password })
-		}).then(function (r) { return r.ok; }).catch(function () { return false; });
-	}
 	var input = document.getElementById("pw");
 	var remember = document.getElementById("remember");
 	var button = document.getElementById("go");
 	var err = document.getElementById("err");
-	// Bounce guard. A remembered key normally resumes silently: unlock → mint →
-	// "/" → the GUI. When the browser drops the DSH session cookie (it is
-	// HttpOnly + SameSite=Strict, so a cross-site iframe/WebView context cannot
-	// keep it) "/" answers 302 back here and the silent resume would redirect
-	// again — an endless flicker the user cannot type through. Count the hops
-	// this tab has made and stop redirecting after MAX_HOPS, leaving a usable
-	// form plus an explanation. This is an environment problem, not a wrong
-	// password: the fix is to open the page in a real top-level tab.
+	// Bounce guard. A remembered key normally resumes silently: unlock → "/" →
+	// the GUI. When the browser drops this cookie (a partitioned or blocked
+	// third-party context) "/" answers 302 back here and the silent resume would
+	// redirect again — an endless flicker the user cannot type through. Count the
+	// hops this tab has made and stop redirecting after MAX_HOPS, leaving a
+	// usable form plus an explanation. This is an environment problem, not a
+	// wrong password: the fix is to open the page in a real top-level tab.
 	var HOPS_KEY = "dsh-lan-mint-hops";
 	var MAX_HOPS = 2;
 	function hops() {
@@ -88,7 +75,7 @@ button:disabled{opacity:.5;cursor:default}
 		if (next > MAX_HOPS) {
 			button.disabled = false;
 			input.disabled = false;
-			err.textContent = "登录未能完成：本浏览器没有保存登录凭据（Cookie 被阻止或被分区）。请在地址栏直接打开本页（不要用内嵌窗口 / iframe），再输入一次口令。";
+			err.textContent = "登录未能完成：本浏览器没有保存访问凭据（Cookie 被阻止或被分区）。请在地址栏直接打开本页（不要用内嵌窗口 / iframe），再输入一次口令。";
 			input.focus();
 			return;
 		}
@@ -102,11 +89,13 @@ button:disabled{opacity:.5;cursor:default}
 		err.textContent = "";
 		postUnlock(value).then(function (ok) {
 			if (!ok) { err.textContent = "口令错误"; button.disabled = false; input.select(); return; }
+			// v1.8.0: the password IS the credential the host accepts, so there is
+			// nothing to mint and nothing to redirect through — set the cookie and
+			// go. (The old flow traded a DSH launch token for a session cookie;
+			// DSH 0.2.3 moved that exchange out of the request path this page can
+			// reach, and the plugin's own password replaces it.)
 			setStoredKey(value, remember.checked);
-			return mint(value).then(function (minted) {
-				if (minted) land();
-				else { err.textContent = "登录失败，请重试"; button.disabled = false; }
-			});
+			land();
 		});
 	}
 	button.addEventListener("click", attempt);
@@ -120,7 +109,11 @@ button:disabled{opacity:.5;cursor:default}
 		return r.ok ? r.json() : null;
 	}).then(function (data) {
 		if (!data) return;
-		if (data.local === true) { land(); return; }
+		// `hostOnly` — not `local` — means "this request came from the host
+		// machine itself": a LAN device the proxy forwards also has a loopback
+		// peer, so `local` is true for it too, and keying on that would bounce it
+		// between "/" and this page until the hop guard gave up.
+		if (data.hostOnly === true) { land(); return; }
 		if (data.passwordSet !== true) {
 			document.querySelector(".s").textContent = "主机尚未设置访问口令，暂时无法从局域网进入。请在主机上打开「设置 → 局域网访问」设置口令后再试。";
 			input.disabled = true;
@@ -135,10 +128,7 @@ button:disabled{opacity:.5;cursor:default}
 		postUnlock(existing).then(function (ok) {
 			if (!ok) { button.disabled = false; return; }
 			setStoredKey(existing, !!window.localStorage.getItem(KEY_STORAGE));
-			mint(existing).then(function (minted) {
-				if (minted) land();
-				else button.disabled = false;
-			});
+			land();
 		});
 	} else {
 		input.focus();

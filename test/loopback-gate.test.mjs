@@ -16,12 +16,13 @@ import { registerHooks } from 'node:module';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { stampProxyHeaders } from '../lib/lan-proxy.js';
 
 const HOME = mkdtempSync(join(tmpdir(), 'dsh-lan-test-'));
 process.env.DSH_HOME = HOME;
 const PATCH = join(HOME, 'profiles', 'desktop', 'cordis.patch.yml');
 /** The one DSH release this plugin version pins; bump together with package.json. */
-const SUPPORTED_DSH = '0.2.2-rc.3';
+const SUPPORTED_DSH = '0.2.3-alpha.2';
 
 // The firewall must never be touched for real: stub node:child_process. The
 // stub is scriptable, so the firewall verdicts below can be driven through the
@@ -70,28 +71,29 @@ const OFFICIAL_AUTHORIZE = 'official-authorize';
 const OFFICIAL_TRUSTED = 'official-trusted';
 const OFFICIAL_ADMIT = { official: 'admit' };
 
-function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
+function makeHarness({ bindHost = '0.0.0.0', port = 19387, trustedAnswer = OFFICIAL_TRUSTED } = {}) {
   const routes = new Map();
-  const calls = { rejection: 0, authorize: 0, authorizeSecure: [], fetchPeers: [] };
+  const calls = { trusted: 0, authenticate: 0, fetchPeers: [] };
   const browserPeer = { id: 'browser-peer', principal: { kind: 'owner' } };
+  // 0.2.3-alpha.1: one admission path —
+  //   route auth → webserver/authorize → connection.isTrustedRequest (fence)
+  //     → connection.authentication.authenticate (credentials → Peer)
+  // The fence patches exactly those two public instance methods.
+  const authentication = {
+    authenticate() {
+      calls.authenticate += 1;
+      return OFFICIAL_ADMIT;
+    },
+  };
   const connection = {
     browserPeer,
-    requestRejection() {
-      calls.rejection += 1;
-      return OFFICIAL_REJECTION;
-    },
-    isTrusted() {
-      return OFFICIAL_TRUSTED;
+    authentication,
+    isTrustedRequest(request) {
+      calls.trusted += 1;
+      return typeof trustedAnswer === 'function' ? trustedAnswer(request) : trustedAnswer;
     },
     admit() {
       return OFFICIAL_ADMIT;
-    },
-    browserAuth: {
-      authorizeIndex(req, res, secure) {
-        calls.authorize += 1;
-        calls.authorizeSecure.push(secure);
-        return OFFICIAL_AUTHORIZE;
-      },
     },
     // The /lanapi re-entry dispatches through the shared `/api` channel, whose
     // `fetch(request, peer)` reads `peer.signal` / `peer.principal`. Omitting the
@@ -135,12 +137,16 @@ function makeHarness({ bindHost = '0.0.0.0', port = 19387 } = {}) {
   return { ctx, connection, browserPeer, routes, calls, dispose };
 }
 
-function makeReq({ peer, host, method = 'GET', url = '/', headers = {}, body = null }) {
+function makeReq({ peer, host, method = 'GET', url = '/', headers = {}, body = null, proxied = false }) {
   const chunks = body === null ? [] : [Buffer.from(JSON.stringify(body))];
+  const all = host === undefined ? { ...headers } : { host, ...headers };
+  // A request this plugin's own proxy forwarded carries the per-process stamp;
+  // the fence trusts exactly that (a LAN browser can never set it).
+  if (proxied) stampProxyHeaders(all);
   return {
     method,
     url,
-    headers: host === undefined ? { ...headers } : { host, ...headers },
+    headers: all,
     socket: { remoteAddress: peer, localAddress: '127.0.0.1' },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk;
@@ -258,50 +264,55 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 }
 
 // ── A. switch ON: the host machine is never gated ──────────────────────────
+// The fence only ever ADDS trust for a request this plugin's proxy stamped. Every
+// other request keeps DSH's own answer verbatim, so the host's browser (and any
+// real DSH session) is decided exactly as stock DSH decides it — no password,
+// no hostname allow-list.
 {
   const h = makeHarness({ bindHost: '0.0.0.0' });
   for (const peer of LOCAL_PEERS) {
     for (const host of HOSTS) {
-      const rejection = h.connection.requestRejection(makeReq({ peer, host }));
-      check(`A requestRejection open (peer=${peer} host=${host})`, rejection === undefined, `got ${JSON.stringify(rejection)}`);
-      const res = makeRes();
-      const allowed = h.connection.browserAuth.authorizeIndex(makeReq({ peer, host }), res);
-      check(`A authorizeIndex open (peer=${peer} host=${host})`, allowed === true && res.statusCode === 0, `allowed=${allowed} status=${res.statusCode}`);
+      const trusted = h.connection.isTrustedRequest(makeReq({ peer, host }));
+      check(`A the fence delegates for the host machine (peer=${peer} host=${host})`, trusted === OFFICIAL_TRUSTED, `got ${JSON.stringify(trusted)}`);
+      const admission = h.connection.authentication.authenticate(makeReq({ peer, host }));
+      check(`A credentials stay DSH's decision for the host (peer=${peer} host=${host})`, admission === OFFICIAL_ADMIT, `got ${JSON.stringify(admission)}`);
     }
-    check(`A requestRejection open (peer=${peer} no host)`, h.connection.requestRejection(makeReq({ peer, host: undefined })) === undefined);
   }
 }
 
-// ── B. switch ON: a LAN device is gated, Host spoofing does not help ───────
+// ── B. switch ON: only the proxy's own requests are trusted ────────────────
+// The stamp is random per process and stripped from client-supplied copies, so a
+// LAN browser can neither produce it nor fake the peer address. A wire request
+// that merely claims `Host: 127.0.0.1` is still decided by DSH.
 {
   const h = makeHarness({ bindHost: '0.0.0.0' });
   for (const host of ['127.0.0.1:19387', '[::1]:19387', 'localhost:19387', `${localV4}:19387`, 'evil.example.com']) {
-    check(`B rejection 403 (peer=${REMOTE} host=${host})`, h.connection.requestRejection(makeReq({ peer: REMOTE, host })) === 403);
-    const res = makeRes();
-    const allowed = h.connection.browserAuth.authorizeIndex(makeReq({ peer: REMOTE, host }), res);
-    check(
-      `B bare / → landing redirect (peer=${REMOTE} host=${host})`,
-      allowed === false && res.statusCode === 302 && res.headers.location === '/dsh-lan/',
-      `allowed=${allowed} status=${res.statusCode} location=${res.headers.location}`,
-    );
+    const trusted = h.connection.isTrustedRequest(makeReq({ peer: REMOTE, host, proxied: true }));
+    check(`B a forwarded request passes the fence (host=${host})`, trusted === true, `got ${JSON.stringify(trusted)}`);
+    const admission = h.connection.authentication.authenticate(makeReq({ peer: REMOTE, host, proxied: true }));
+    check(`B without a password DSH still decides (host=${host})`, admission === OFFICIAL_ADMIT, `got ${JSON.stringify(admission)}`);
   }
-  // No password configured: the LAN is unusable, never unguarded — a made-up
-  // key must not open it either.
-  check('B no password → a bogus key is still refused', h.connection.requestRejection(makeReq({ peer: REMOTE, host: 'x:1', headers: { 'x-dsh-lan-key': 'k' } })) === 403);
-  const res = makeRes();
-  const cookieReq = makeReq({ peer: REMOTE, host: 'x:1', headers: { cookie: 'dsh-lan-key=k' } });
-  const allowed = h.connection.browserAuth.authorizeIndex(cookieReq, res);
-  check('B no password → a bogus cookie still gets the landing page', allowed === false && res.statusCode === 302);
+  for (const peer of [REMOTE, ...LOCAL_PEERS]) {
+    const trusted = h.connection.isTrustedRequest(makeReq({ peer, host: '192.168.0.9:19387' }));
+    check(`B an unstamped request keeps DSH's fence (peer=${peer})`, trusted === OFFICIAL_TRUSTED, `got ${JSON.stringify(trusted)}`);
+  }
+  // No password configured: the LAN is unusable, never unguarded.
+  const bogus = h.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', proxied: true, headers: { 'x-dsh-lan-key': 'k' } }));
+  check('B no password → a bogus key authenticates nobody', bogus === OFFICIAL_ADMIT, JSON.stringify(bogus));
+  const bogusCookie = h.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', proxied: true, headers: { cookie: 'dsh-lan-key=k' } }));
+  check('B no password → a bogus cookie authenticates nobody', bogusCookie === OFFICIAL_ADMIT, JSON.stringify(bogusCookie));
 }
 
-// ── C. switch OFF: stock DSH behaviour (delegation, no gate) ───────────────
+// ── C. switch OFF: stock DSH behaviour (nothing patched at all) ────────────
 {
   const h = makeHarness({ bindHost: '127.0.0.1' });
-  const rejection = h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }));
-  check('C switch off → official rejection delegates', rejection === OFFICIAL_REJECTION, `got ${JSON.stringify(rejection)}`);
-  const res = makeRes();
-  const allowed = h.connection.browserAuth.authorizeIndex(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }), res);
-  check('C switch off → official authorize delegates', allowed === OFFICIAL_AUTHORIZE && res.statusCode === 0);
+  check(
+    'C switch off → neither method is patched',
+    h.connection.isTrustedRequest.__dshLanPatched !== true && h.connection.authentication.authenticate.__dshLanPatched !== true,
+  );
+  const stamped = makeReq({ peer: REMOTE, host: '192.168.0.9:19387', proxied: true, headers: { 'x-dsh-lan-key': 'whatever' } });
+  check('C switch off → the official fence answers', h.connection.isTrustedRequest(stamped) === OFFICIAL_TRUSTED);
+  check('C switch off → the official credentials answer', h.connection.authentication.authenticate(stamped) === OFFICIAL_ADMIT);
 }
 
 // ── D. status payload: `local` is the authority, host detail stays host-only ─
@@ -370,12 +381,31 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const bad = makeRes();
   await unlock.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', method: 'POST', url: '/dsh-lan/unlock', body: { password: 'nope' } }), bad);
   check('F LAN unlock with a wrong password reports ok:false', bad.statusCode === 200 && json(bad).ok === false, `status=${bad.statusCode} body=${bad.body}`);
-  check('F correct key opens the fence', h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { 'x-dsh-lan-key': 'hunter2' } })) === undefined);
-  check('F wrong key keeps the fence shut', h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { 'x-dsh-lan-key': 'nope' } })) === 403);
-  const cookieRes = makeRes();
-  const cookieAllowed = h.connection.browserAuth.authorizeIndex(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { cookie: 'dsh-lan-key=hunter2' } }), cookieRes);
-  check('F correct cookie delegates to DSH', cookieAllowed === OFFICIAL_AUTHORIZE, `got ${cookieAllowed}`);
-  check('F host machine ignores the password entirely', h.connection.requestRejection(makeReq({ peer: '127.0.0.1', host: 'evil.example.com' })) === undefined);
+  const byHeader = h.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', proxied: true, headers: { 'x-dsh-lan-key': 'hunter2' } }));
+  check('F the password header authenticates the LAN client', byHeader !== OFFICIAL_ADMIT && byHeader.peer === h.browserPeer, JSON.stringify(byHeader));
+  const wrongKey = h.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', proxied: true, headers: { 'x-dsh-lan-key': 'nope' } }));
+  check('F a wrong password authenticates nobody', wrongKey === OFFICIAL_ADMIT, JSON.stringify(wrongKey));
+  const byCookie = h.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', proxied: true, headers: { cookie: 'dsh-lan-key=hunter2' } }));
+  check('F the password cookie authenticates the LAN client', byCookie !== OFFICIAL_ADMIT && byCookie.peer === h.browserPeer, JSON.stringify(byCookie));
+  // A password that never traversed the proxy buys nothing: the door trusts its
+  // own per-process stamp, not a header any browser could set.
+  const direct = h.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { 'x-dsh-lan-key': 'hunter2' } }));
+  check('F an unstamped request cannot use the password', direct === OFFICIAL_ADMIT, JSON.stringify(direct));
+  check('F the host machine needs no password at all', h.connection.isTrustedRequest(makeReq({ peer: '127.0.0.1', host: 'evil.example.com' })) === OFFICIAL_TRUSTED);
+
+  // A deliberate direct bind (`dsh web --host <lan-ip>`, no proxy): DSH's own
+  // fence accepts the listener's own authority, and the password replaces the
+  // token there too — but only for the authority DSH itself trusted.
+  const bound = makeHarness({
+    bindHost: '192.168.0.9',
+    trustedAnswer: (req) => String(req.headers.host ?? '').startsWith('192.168.0.9:'),
+  });
+  await setPassword(bound, 'hunter2');
+  const hostBound = bound.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { 'x-dsh-lan-key': 'hunter2' } }));
+  check('F a direct-bind deployment can use the password too', hostBound !== OFFICIAL_ADMIT && hostBound.peer === bound.browserPeer, JSON.stringify(hostBound));
+  const forgedHost = bound.connection.authentication.authenticate(makeReq({ peer: REMOTE, host: 'evil.example.com', headers: { 'x-dsh-lan-key': 'hunter2' } }));
+  check('F a forged Host cannot use the password even on a direct bind', forgedHost === OFFICIAL_ADMIT, JSON.stringify(forgedHost));
+  bound.dispose();
 }
 
 // ── G. landing page + /lanapi gate ─────────────────────────────────────────
@@ -386,6 +416,8 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   await landing.handler(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }), res);
   check('G landing page served to a LAN device', res.statusCode === 200 && res.body.includes('DSH 远程访问'));
   check('G landing page asks the server whether the visitor is the host', res.body.includes('/dsh-lan/status') && res.body.includes('passwordSet'));
+  check('G landing page never calls a mint endpoint', !res.body.includes('/dsh-lan/mint'));
+  check('G the host shortcut keys on hostOnly, not on the peer-based local', res.body.includes('data.hostOnly === true'));
 
   const proxy = h.routes.get('prefix /lanapi');
   const denied = makeRes();
@@ -460,44 +492,39 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   // missing token carve-out (its last hop was refused on the LAN), and `npm
   // test` must catch that regression too.
   check('H the proxy is the only LAN door and takes the injected gate', server.includes('createLanProxy({') && server.includes('admit: makeLanAdmit(ctx)'));
+  // 1.8.0 — the LAN door no longer forwards a launch token: DSH 0.2.3 intercepts
+  // `GET /?token=` before routing, and this plugin's password is the credential.
   check(
-    'H the LAN gate admits the launch-token exchange',
-    server.includes('if (req.method === "GET" && url.pathname === "/" && url.searchParams.has("token")) return true;'),
-    'the mint flow ends on GET /?token=… through the proxy — without this carve-out the LAN login cannot complete'
+    'H the LAN door strips a stale token instead of forwarding it',
+    server.includes('function stripTokenFromRequest(req)') && server.includes('rewrite: stripTokenFromRequest'),
+    'the rewrite hook is what keeps a stale bookmark from dead-ending on DSH 401 text'
   );
   check('H the LAN gate keeps the landing flow reachable', server.includes('if (url.pathname.startsWith("/dsh-lan/")) return true;'));
-  // 1.7.1 — a stale `?token=` from a LAN client must not dead-end on DSH's 401
-  // text ("dsh web authentication required…"): frontend-static hands this code a
-  // WHATWG Request (no socket, Headers object), so the proxy stamp is the only
-  // locality signal that survives. A refused token falls back to the landing page.
+  // The proxy stamp is the one signal that survives both header shapes, which is
+  // what makes it usable from `webserver/authorize` (a WHATWG headers object).
   check(
-    'H a stale token from a LAN client lands on the landing page',
-    server.includes('const delegateTokenWithLandingFallback')
-      && server.includes('if (!fellBack && status === 401)')
-      && server.includes('return delegateTokenWithLandingFallback(req, res, secure);')
-      && server.includes('const proxied = viaProxy(req);')
-      && proxySource.includes('typeof headers.get === "function"'),
-    'fallback / WHATWG-Request header handling missing'
+    'H the proxy stamp survives both header shapes',
+    proxySource.includes('typeof headers.get === "function"') && server.includes('viaProxy(request)'),
+    'WHATWG Headers handling missing'
   );
   check('H nothing writes a webserver override any more', !server.includes('`    host: ') && !server.includes('"- id: webserver"') && !server.includes('host: \'${ALL_INTERFACES}\''));
-  // 1.5.1 — the fence must patch the TRUST FUNNEL, not just requestRejection.
-  // 0.2.1 admits /api through connection.admit() (dsh-api-gateway →
-  // admitConnection), which starts with isTrusted() → isTrustedApiRequest(...);
-  // that rule rejects a non-loopback Host authority, and proxied requests keep
-  // the browser's LAN authority on purpose. 1.5.0 patched requestRejection only
-  // (as every 1.4.x did) and shipped a GUI that loaded over the LAN while every
-  // API call answered 403 — test/lan-proxy-e2e.mjs compares both origins now.
-  check('H the fence patches the trust funnel too', server.includes('connection.isTrusted = patchedIsTrusted') && server.includes('const patchedIsTrusted'));
-  check('H the trust allowance needs a local peer and an open door', server.includes('if (local && lanDoorOpen(ctx)) return true;'));
-  // 1.5.4 — the event stream goes through `admit()`, which also demands DSH's own
-  // browser session; its cookie name is derived from Host:port and DSH used to change
-  // ports every launch, so a valid LAN client could hold a session that can never
-  // match again and sit on 401 for ever (measured on the user's machine:
-  // `upgrade-open … cookie=true` then `HTTP/1.1 401 Unauthorized`). Admission now
-  // accepts this plugin's password credential and hands back DSH's own browserPeer.
-  check('H admission accepts the password credential', server.includes('connection.admit = patchedAdmit') && server.includes('return { peer: connection.browserPeer };'));
-  check('H admission requires a local peer, an open door and the credential', server.includes('if (local && lanDoorOpen(ctx) && hasLanCredential(req)) return { peer: connection.browserPeer };'));
-  check('H the admission override is installed and removed with the rest', server.includes('const origAdmit') && server.includes('wrap.connection.admit = wrap.origAdmit'));
+  // 0.2.3-alpha.1 — the whole admission path collapsed onto two public methods:
+  // `isTrustedRequest` (Host/Origin fence) and `authentication.authenticate`
+  // (credentials → Peer). `requestRejection` / `browserAuth` / `authorizeIndex`
+  // no longer exist, and the fence must not try to call them.
+  check('H the fence patches the trust funnel', server.includes('connection.isTrustedRequest = patchedIsTrusted') && server.includes('const patchedIsTrusted'));
+  check('H the trust allowance needs a proxied request and an open door', server.includes('if (lanDoorOpen(ctx) && viaProxy(request)) return true;'));
+  check('H the credential step hands over DSH\'s own browser Peer', server.includes('authentication.authenticate = patchedAuthenticate') && server.includes('return { peer: connection.browserPeer };'));
+  check(
+    'H the credential step needs the door and the password, then a trusted transport',
+    server.includes('if (lanDoorOpen(ctx) && hasLanCredential(request)) {') && server.includes('let admitted = viaProxy(request);'),
+  );
+  check('H the credential override is installed and removed with the rest', server.includes('const origAuthenticate') && server.includes('wrap.authentication.authenticate = wrap.origAuthenticate'));
+  check(
+    'H the removed 0.2.2 connection API is not called any more',
+    !server.includes('connection.requestRejection') && !server.includes('connection.browserAuth') && !server.includes('connection.authenticatedUrl'),
+    'a leftover call site would throw inside DSH\'s request path'
+  );
   // 1.5.6 — the card must open with a ONE-LINE RED safety notice (a user requirement,
   // so it gets asserted rather than left to chance): red via the official error token,
   // `nowrap` so it stays a single line, and rendered before the title row.
@@ -557,8 +584,17 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   // with the loopback bind DSH requires, the composed picker is NATIVE and
   // `directoryPicker/list` does not exist at all.
   check('H the dialog has its own listing routes', server.includes('path: "/dsh-lan/fs/list"') && server.includes('path: "/dsh-lan/fs/mkdir"'));
-  check('H the filesystem routes sit behind the LAN door', (server.match(/if \(!lanFileAccess\(ctx, req\)\)/g) ?? []).length === 2);
-  check('H the door accepts host / password / browser session', server.includes('function lanFileAccess(ctx, req)') && server.includes('if (isHostOnlyRequest(req)) return true;') && server.includes('auth.isAuthenticated(req, false) === true'));
+  check('H the filesystem routes sit behind the LAN door', (server.match(/if \(!lanFileAccess\(ctx, req, peer\)\)/g) ?? []).length === 2);
+  check('H the door accepts host / password / DSH-accepted Peer', server.includes('function lanFileAccess(ctx, req, peer)') && server.includes('if (isHostOnlyRequest(req)) return true;') && server.includes('return peer !== undefined;'));
+  // Every password surface must be reachable WITHOUT a DSH session (0.2.3 requires
+  // a live Peer on every `required` route), and `/lanapi` must stay required.
+  check('H the password surfaces are anonymous routes', (server.match(/auth: "anonymous"/g) ?? []).length === 8, String((server.match(/auth: "anonymous"/g) ?? []).length));
+  // A browser fetches `<link rel="manifest">` and its home-screen icons with
+  // credentials OMITTED, so the door must treat them as public (DSH does).
+  check(
+    'H the credential-less web-app assets are public at the door',
+    server.includes('PUBLIC_WEB_ASSET') && server.includes('manifest\\.webmanifest') && server.includes('PUBLIC_WEB_ASSET.test(url.pathname)'),
+  );
   check('H listing keeps the official listing shape', server.includes('ancestryCrumbs(target)') && server.includes('hidden: dirent.name.startsWith(".")'));
   check('H the client calls the plugin routes first', client.includes('lanFsCall("/dsh-lan/fs/list" + query') && client.includes('lanFsCall("/dsh-lan/fs/mkdir"'));
   check('H an older node half still works through the official service', client.includes('!contentType.includes("application/json")') && client.includes('return browse.listDirectory(path, signal);'));
@@ -664,8 +700,8 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const h = makeHarness({ bindHost: '0.0.0.0' });
-  h.connection.requestRejection(makeReq({ peer: '127.0.0.1', host: '[::1]:19387' }));
-  h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }));
+  h.connection.isTrustedRequest(makeReq({ peer: '127.0.0.1', host: '[::1]:19387' }));
+  h.connection.isTrustedRequest(makeReq({ peer: REMOTE, host: '192.168.0.9:19387' }));
   const status = h.routes.get('exact /dsh-lan/status');
 
   const localRes = makeRes();
@@ -689,7 +725,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   stub.powershellJson = '';
   const h = makeHarness({ bindHost: '0.0.0.0', port: 19420 });
   // A LAN peer reaches the server while LAN access is on …
-  h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19420', headers: { 'x-dsh-lan-key': 'whatever' } }));
+  h.connection.isTrustedRequest(makeReq({ peer: REMOTE, host: '192.168.0.9:19420', headers: { 'x-dsh-lan-key': 'whatever' } }));
   const res = makeRes();
   await h.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:1' }), res);
   const body = json(res);
@@ -807,7 +843,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
 // services) its closures reach a dead context: `ctx.webServer` itself throws.
 // Nothing this plugin installs may ever throw in that situation.
 {
-  const h = makeHarness({ bindHost: '127.0.0.1' });
+  const h = makeHarness({ bindHost: '0.0.0.0' });
   // Simulate the dead service: a disposed cordis getter throws on read.
   Object.defineProperty(h.ctx, 'webServer', {
     configurable: true,
@@ -843,9 +879,8 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
     headers: { host: '127.0.0.1:19387' },
     get socket() { throw new Error('dead context'); },
   };
-  check('K4 a throwing request degrades to the official rejection', h.connection.requestRejection(hostile) === OFFICIAL_REJECTION);
-  check('K4 a throwing request degrades to the official trust answer', h.connection.isTrusted(hostile) === OFFICIAL_TRUSTED);
-  check('K4 a throwing request degrades to the official admission', h.connection.admit(hostile) === OFFICIAL_ADMIT);
+  check('K4 a throwing request degrades to the official trust answer', h.connection.isTrustedRequest(hostile) === OFFICIAL_TRUSTED);
+  check('K4 a throwing request degrades to the official credential answer', h.connection.authentication.authenticate(hostile) === OFFICIAL_ADMIT);
 
   // And dispose itself: it runs while the tree is being torn down, so it must not
   // throw — and it must still unregister every route (a live route on a dead
@@ -874,79 +909,59 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   check('M zh firewall.bad still reads 防火墙未放行（需管理员权限）', value('firewall.bad') === '防火墙未放行（需管理员权限）', String(value('firewall.bad')));
 }
 
-// ── N. switch ON: the desktop shell's launch-token exchange survives ───────
+// ── N. the fence installs once, and every LAN route declares its own policy ─
 //
-// The desktop shell authenticates itself by fetching the Host's own
-// `/?token=…` URL and demanding exactly `303` + `Set-Cookie`. Short-circuiting
-// every host request with `return true` hands it a 200 instead, so the shell
-// throws `Desktop Host authentication failed` and the desktop app cannot start
-// (1.4.4 regression). Carrying the process token IS being the host: the shell
-// must reach DSH's own rule, which decides 303/401 by the token alone.
+// 0.2.3-alpha.1 authorizes EVERY webserver route before its handler
+// (`auth` defaults to 'required'). The landing page, the password exchange and
+// the status probe must therefore be reachable without a DSH session, or the
+// only page a LAN device can open would answer 401 before it renders. The rest
+// stays ‘required’: those handlers get a real Peer and no longer need to guess.
 {
   const h = makeHarness({ bindHost: '0.0.0.0' });
-  for (const peer of LOCAL_PEERS) {
-    for (const host of HOSTS) {
-      const res = makeRes();
-      const allowed = h.connection.browserAuth.authorizeIndex(makeReq({ peer, host, url: '/?token=abc' }), res);
-      check(
-        `N shell token exchange delegates to DSH (peer=${peer} host=${host})`,
-        allowed === OFFICIAL_AUTHORIZE && res.statusCode === 0,
-        `allowed=${JSON.stringify(allowed)} status=${res.statusCode}`,
-      );
-    }
-  }
-  // The carve-out is exactly "GET / with a token parameter" — nothing wider.
-  check('N a tokenless host request stays local', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), makeRes()) === true);
-  check('N a token on a non-root path stays local', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/api?token=abc' }), makeRes()) === true);
-  check('N POST / with a token stays local', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/?token=abc' }), makeRes()) === true);
-  // `has()` semantics (agreed): the parameter merely existing counts, so an
-  // empty value is DSH's to judge (its own tokenMatches then answers 401).
-  check('N empty ?token= still delegates to DSH', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=' }), makeRes()) === OFFICIAL_AUTHORIZE);
-  check('N a repeated ?token= still delegates to DSH', h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=a&token=b' }), makeRes()) === OFFICIAL_AUTHORIZE);
-  // The password gate is a different function and must NOT learn about tokens.
-  check('N a token never bypasses requestRejection', h.connection.requestRejection(makeReq({ peer: REMOTE, host: '192.168.0.9:19387', url: '/?token=abc' })) === 403);
+  check('N applying the row patches the trust funnel', h.connection.isTrustedRequest.__dshLanPatched === true);
+  check('N applying the row patches the credential step', h.connection.authentication.authenticate.__dshLanPatched === true);
 
-  // Re-applying the same plugin row must not stack the delegation: the guard
-  // has to compare both the connection and its browserAuth.
-  const before = h.calls.authorize;
-  const res = makeRes();
-  h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=abc' }), res);
-  const single = h.calls.authorize - before;
-  h.ctx.webServer.host = '0.0.0.0';
+  // Re-applying must not stack wrappers: the guard compares the connection AND
+  // the authentication service.
+  const before = h.calls.trusted;
   plugin.apply(h.ctx, {});
-  const res2 = makeRes();
-  h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=abc' }), res2);
+  h.connection.isTrustedRequest(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }));
+  check('N re-applying the row does not stack wrappers', h.calls.trusted - before === 1, `calls=${h.calls.trusted - before}`);
+
+  for (const path of ['/dsh-lan/status', '/dsh-lan/configure', '/dsh-lan/unlock', '/dsh-lan/', '/dsh-lan/diag', '/dsh-lan/fs/list', '/dsh-lan/fs/mkdir']) {
+    const route = h.routes.get(`exact ${path}`);
+    check(`N ${path} is reachable without a DSH session`, route !== undefined && route.auth === 'anonymous', JSON.stringify(route?.auth));
+  }
+  check('N the unknown-fs 404 is reachable too', h.routes.get('prefix /dsh-lan/fs')?.auth === 'anonymous');
+  check('N /lanapi keeps DSH’s default (a live Peer is required)', h.routes.get('prefix /lanapi')?.auth === undefined);
+
+  // Closing the door restores the official methods.
+  h.ctx.webServer.host = '127.0.0.1';
+  plugin.apply(h.ctx, {});
   check(
-    'N re-applying the row does not stack delegations',
-    single === 1 && h.calls.authorize - before === 2 && res2.statusCode === 0,
-    `single=${single} total=${h.calls.authorize - before} status=${res2.statusCode}`,
+    'N closing the door restores both official methods',
+    h.connection.isTrustedRequest.__dshLanPatched !== true && h.connection.authentication.authenticate.__dshLanPatched !== true,
   );
+  h.dispose();
 }
 
-// ── N2. authorizeIndex forwards DSH's `secure` flag (v1.6.0) ───────────────
-// DSH 0.2.1 added a third parameter (still present in 0.2.2-rc.3): the official
-// callers pass `webServer.protocol === "https:"` and BrowserAuth uses it for the
-// session cookie's `Secure` attribute. Every delegation this plugin makes must
-// carry it through — dropping it silently downgrades a TLS deployment's cookie.
+// ── N2. a stale ?token= no longer dead-ends a LAN browser ─────────────────
+// DSH's token plugin intercepts `GET /?token=` BEFORE routing and answers 401
+// in plain text. On a LAN browser the password is the credential, so the door
+// drops the parameter on the way in — the request becomes an ordinary `/`, and
+// the password decides. (Section O proves the proxy actually applies it.)
 {
+  const { stripTokenFromRequest } = await import('../lib/index.js');
+  check('N2 a stale token is stripped from the forwarded path', stripTokenFromRequest({ url: '/?token=stale' }) === '/', String(stripTokenFromRequest({ url: '/?token=stale' })));
+  check('N2 other query parameters survive', stripTokenFromRequest({ url: '/?a=1&token=stale&b=2' }) === '/?a=1&b=2', String(stripTokenFromRequest({ url: '/?a=1&token=stale&b=2' })));
+  check('N2 a tokenless URL is forwarded untouched', stripTokenFromRequest({ url: '/api/x?y=1' }) === undefined);
+  check('N2 a tokenless path without a query is untouched', stripTokenFromRequest({ url: '/' }) === undefined);
+
   const h = makeHarness({ bindHost: '0.0.0.0' });
   await setPassword(h, 'hunter2');
-  // A password-holding LAN device on `/`: delegate, flag intact.
-  h.connection.browserAuth.authorizeIndex(
-    makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { cookie: 'dsh-lan-key=hunter2' } }),
-    makeRes(),
-    true,
-  );
-  check('N2 secure survives the landing delegation', h.calls.authorizeSecure.at(-1) === true, String(h.calls.authorizeSecure.at(-1)));
-  // The desktop shell's launch-token exchange delegates too (the 1.4.5 contract).
-  h.connection.browserAuth.authorizeIndex(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', url: '/?token=abc' }), makeRes(), true);
-  check('N2 secure survives the token-exchange delegation', h.calls.authorizeSecure.at(-1) === true, String(h.calls.authorizeSecure.at(-1)));
-  // A two-argument caller (an older Host) still works and defaults to false.
-  h.connection.browserAuth.authorizeIndex(
-    makeReq({ peer: REMOTE, host: '192.168.0.9:19387', headers: { cookie: 'dsh-lan-key=hunter2' } }),
-    makeRes(),
-  );
-  check('N2 a two-argument caller defaults to non-secure', h.calls.authorizeSecure.at(-1) === false, String(h.calls.authorizeSecure.at(-1)));
+  const proxiedToken = makeReq({ peer: REMOTE, host: '192.168.0.9:19387', proxied: true, headers: { cookie: 'dsh-lan-key=hunter2' }, url: '/?token=stale' });
+  const admission = h.connection.authentication.authenticate(proxiedToken);
+  check('N2 a password-holding LAN client is authenticated even on a token URL', admission !== OFFICIAL_ADMIT && admission.peer === h.browserPeer, JSON.stringify(admission));
   h.dispose();
 }
 
@@ -964,6 +979,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const { createServer } = await import('node:http');
   const net = await import('node:net');
   const { createLanProxy } = await import('../lib/lan-proxy.js');
+  const { stripTokenFromRequest } = await import('../lib/index.js');
 
   const upstream = createServer((req, res) => {
     res.writeHead(200, {
@@ -988,6 +1004,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const proxy = createLanProxy({
     target: () => ({ host: '127.0.0.1', port }),
     admit: (req) => String(req.url ?? '').startsWith('/dsh-lan/') || req.headers['x-test-credential'] === 'yes',
+    rewrite: stripTokenFromRequest,
     addresses: () => ['127.0.0.2'],
     log: () => {}
   });
@@ -1016,6 +1033,15 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
     String(allowed.headers.get('x-upstream-host'))
   );
   check('O path and query survive the hop', allowed.headers.get('x-upstream-url') === '/some/path?q=1', String(allowed.headers.get('x-upstream-url')));
+
+  // v1.8.0: DSH's token plugin answers 401 to `GET /?token=` before routing. A
+  // stale bookmark must not dead-end a phone, so the door drops the parameter.
+  const stale = await fetch(`${base}/?token=stale`, { headers: { 'x-test-credential': 'yes' } });
+  check(
+    'O a stale ?token= is stripped before the hop',
+    stale.status === 200 && stale.headers.get('x-upstream-url') === '/',
+    `${String(stale.status)} ${String(stale.headers.get('x-upstream-url'))}`
+  );
 
   const rawUpgrade = (credential) => new Promise((resolve) => {
     const socket = net.connect(port, '127.0.0.2', () => {

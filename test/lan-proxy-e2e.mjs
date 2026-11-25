@@ -13,16 +13,23 @@
 // profile and any installed copy of the plugin are never touched.
 //
 // What it proves, in order:
-//   1. with LAN desired, the Host boots and the proxy comes up on the LAN
-//      addresses — while DSH's own listener stays on loopback;
-//   2. the proxy reuses the DSH port, and an uncredentialed LAN request is
-//      refused (`/` gets the landing redirect, other paths get 403);
-//   3. the password flow works THROUGH the proxy: unlock → mint → token URL;
-//   4. the token exchange returns 303 + a cookie bound to the LAN authority, and
-//      the SPA is served to a cookie-carrying LAN client;
-//   5. the profile patch still carries NO `webserver` override — the whole point
+//   1. the Host boots under its 0.2.3 authentication PROVIDER (IPC secret →
+//      `dsh-desktop-session` cookie), and that credential is required, not
+//      merely accepted;
+//   2. with LAN desired, the proxy comes up on the LAN addresses while DSH's own
+//      listener stays on loopback, and `enforcement` reports the fence as "full"
+//      (the 1.8.0 two-method patch actually installed);
+//   3. an uncredentialed LAN request is refused (`/` gets the landing redirect,
+//      other paths get 403) and the landing page carries no mint call;
+//   4. the password alone — one `dsh-lan-key` cookie, no DSH session — opens the
+//      SPA, the RPC path and the event-stream WebSocket, and reconnect works
+//      after an abrupt client loss;
+//   5. a stale `?token=` is stripped for a password holder and lands on the
+//      password page for everyone else;
+//   6. the profile patch still carries NO `webserver` override — the whole point
 //      of v1.5.0, since a wildcard host there makes 0.2.1 refuse to start.
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -338,14 +345,35 @@ function boot({ profile, home }, onReady) {
 		clearTimeout(timer);
 	};
 	let handled = false;
+	/**
+	 * 0.2.3-alpha.1 moved the shell's authentication off HTTP entirely: the host
+	 * process waits for `{ type: "desktop-auth", secret }` over IPC, registers the
+	 * `DesktopAuthentication` provider with it, and publishes `ready` only after
+	 * that provider admitted its own `dsh-desktop-session=<secret>` cookie. The
+	 * e2e plays the shell's role: mint a 32-byte base64url secret, deliver it
+	 * once (a duplicate is a hard failure on the host side), and use it as the
+	 * host credential for every request that should look like "the shell".
+	 */
+	const secret = randomBytes(32).toString("base64url");
+	let authSent = false;
+	const sendAuth = () => {
+		if (authSent) return;
+		authSent = true;
+		try { child.send({ type: "desktop-auth", secret }); } catch {}
+	};
+	sendAuth();
 	child.on("message", async (msg) => {
+		if (msg?.type === "starting") {
+			sendAuth();
+			return;
+		}
 		if (msg?.type === "fatal") {
 			console.log("HOST FATAL:", String(msg.message).slice(0, 400));
 			await stop(); process.exit(3);
 		}
 		if (msg?.type !== "ready" || handled) return;
 		handled = true;
-		await onReady(new URL(msg.url).origin, msg.url, stop);
+		await onReady(new URL(msg.url).origin, `dsh-desktop-session=${secret}`, stop);
 	});
 	setTimeout(async () => { console.log("TIMEOUT"); await stop(); process.exit(5); }, 150000);
 }
@@ -353,37 +381,41 @@ function boot({ profile, home }, onReady) {
 const env = await prepare();
 console.log("isolated home:", env.home);
 
-boot(env, async (local, readyUrl, stop) => {
+boot(env, async (local, hostCookie, stop) => {
 	// Handed to the optional browser phase, which runs after the assertions.
 	let lanBaseForBrowser = "";
 	let cookieForBrowser = "";
-	let localCookieForBrowser = "";
+	const localCookieForBrowser = hostCookie;
 	try {
-		// 0 ── the desktop shell's own handshake. It fetches the ready URL with
-		// redirect:"manual" and demands exactly 303 + Set-Cookie, otherwise it
-		// aborts startup with "Desktop Host authentication failed" — the 1.4.5
-		// regression. It runs FIRST because a broken handshake means the app the
-		// rest of this file describes never starts at all.
-		const own = await step(readyUrl);
+		// 0 ── 0.2.3-alpha.1 replaced the shell's HTTP token exchange with an
+		// authentication PROVIDER: the shell mints a secret, hands it over IPC, and
+		// carries `dsh-desktop-session=<secret>` on every request. The e2e does the
+		// same, and checks the credential is both accepted and REQUIRED (a Host that
+		// served the SPA to anyone would pass the first check and fail the second).
+		const own = await step(`${local}/`, { headers: { cookie: hostCookie } });
 		check(
-			"0 the host's own launch-token exchange → 303 + cookie (shell handshake)",
-			own.status === 303 && own.cookie !== null,
-			`${String(own.status)} cookie=${own.cookie === null ? "null" : "present"}`
+			"0 the host credential is accepted (SPA served)",
+			own.status === 200 && own.body.includes("<html"),
+			`${String(own.status)} len=${own.body.length}`
 		);
-		const localCookie = String(own.cookie ?? "").split(";")[0];
-		localCookieForBrowser = localCookie;
+		const anonymous = await step(`${local}/`);
+		check("0 the host is not wide open without its credential", anonymous.status === 401, String(anonymous.status));
 
-		// 1 ── the door is open, and DSH itself stayed on loopback
+		// 1 ── the door is open, DSH itself stayed on loopback, and the 0.2.3 fence
+		// (isTrustedRequest + authentication.authenticate) really installed. The
+		// last one is the whole 1.8.0 migration: a "degraded" verdict here means the
+		// LAN page would load and every API call would 403.
 		const st = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
 		console.log("--- status:", JSON.stringify({ enabled: st.enabled, desired: st.desiredEnabled, applying: st.applying, bindHost: st.bindHost, port: st.port, lanUrls: st.lanUrls, enforcement: st.enforcement }));
 		check("1 proxy is listening (enabled)", st.enabled === true, JSON.stringify(st.enabled));
 		check("1 no apply gap (applying=false)", st.applying === false, String(st.applying));
 		check("1 DSH itself is still bound to loopback", /^(127\.|::1)/.test(String(st.bindHost)), String(st.bindHost));
 		check("1 LAN URLs are advertised", Array.isArray(st.lanUrls) && st.lanUrls.length > 0, JSON.stringify(st.lanUrls));
+		check("1 the 0.2.3 fence is fully installed (not degraded)", st.enforcement === "full", String(st.enforcement));
 		const lanBase = String(st.lanUrls[0]).replace(/\/$/, "");
 		lanBaseForBrowser = lanBase;
 
-		// 2 ── a known password, set from the host side (configure is loopback-only)
+		// 2 ── a known password, set from the host side (configure is host-only)
 		const cfg = await step(`${local}/dsh-lan/configure`, {
 			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: PASSWORD })
 		});
@@ -396,61 +428,56 @@ boot(env, async (local, readyUrl, stop) => {
 		check("3 LAN /api without a credential → 403", api.status === 403, String(api.status));
 		const landing = await step(`${lanBase}/dsh-lan/`);
 		check("3 landing page is served through the proxy", landing.status === 200 && landing.body.includes("<"), `${String(landing.status)} ${landing.body.slice(0, 40)}`);
+		check("3 the landing page no longer calls a mint endpoint", !landing.body.includes("/dsh-lan/mint"), landing.body.slice(0, 80));
+		// 3b ── the web-app manifest and its home-screen icons. A browser fetches
+		// `<link rel="manifest">` (and the icons it names) with credentials
+		// OMITTED, so the proxy has to treat them as public assets; otherwise every
+		// LAN page gets a 403 here and "add to home screen" silently stops working.
+		// DSH itself serves them as plain `anonymous` static files.
+		const manifestNoCookie = await step(`${lanBase}/manifest.webmanifest`);
+		const manifestLocal = await step(`${local}/manifest.webmanifest`);
+		check(
+			"3 the web-app manifest is served to a credential-less LAN client",
+			manifestNoCookie.status === 200 && manifestNoCookie.body.includes("\"name\"") && manifestNoCookie.body === manifestLocal.body,
+			`lan=${String(manifestNoCookie.status)} local=${String(manifestLocal.status)} len=${manifestNoCookie.body.length}`
+		);
+		const iconNoCookie = await step(`${lanBase}/icon-192.png`);
+		check("3 the home-screen icon is public too", iconNoCookie.status === 200, String(iconNoCookie.status));
 
-		// 4 ── the password flow, all of it through the proxy
+		// 4 ── the password flow. 1.8.0 has NO mint step: the password IS the
+		// credential, so the landing page only sets `dsh-lan-key` and navigates.
+		// The server side is `connection.authentication.authenticate`, which hands
+		// back DSH's own owner Peer.
 		const wrong = await step(`${lanBase}/dsh-lan/unlock`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "nope" }) });
 		check("4 wrong password refused", JSON.parse(wrong.body).ok === false, wrong.body.slice(0, 60));
 		const ok = await step(`${lanBase}/dsh-lan/unlock`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: PASSWORD }) });
 		check("4 correct password accepted", JSON.parse(ok.body).ok === true, ok.body.slice(0, 60));
-		const mint = await step(`${lanBase}/dsh-lan/mint`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: PASSWORD }) });
-		check(
-			"4 mint → 302 to a token URL on the LAN authority",
-			mint.status === 302 && String(mint.location).startsWith(lanBase) && String(mint.location).includes("token="),
-			`${String(mint.status)} ${String(mint.location).slice(0, 70)}`
-		);
-
-		// 5 ── redeem the token THROUGH the proxy; the cookie must bind to the LAN authority
-		const redeem = await step(String(mint.location));
-		check("5 token exchange → 303 + cookie", redeem.status === 303 && redeem.cookie !== null, `${String(redeem.status)} cookie=${redeem.cookie === null ? "null" : "present"}`);
-		const cookie = String(redeem.cookie ?? "").split(";")[0];
+		const cookie = `dsh-lan-key=${encodeURIComponent(PASSWORD)}`;
 		cookieForBrowser = cookie;
-		check("5 the cookie is a DSH session cookie for this authority", cookie.startsWith("dsh-auth-"), cookie.slice(0, 24));
-		// 5a ── a STALE token must not dead-end. A phone can arrive with an old
-		// `?token=` (a bookmark, a URL copied from `dsh web`, a launcher that
-		// cached a previous run's URL). Proxied requests are "local" by peer, so
-		// the plugin lets DSH judge the token and DSH answers 401 with "dsh web
-		// authentication required…", which is useless on a phone. The landing page
-		// is the only answer that can mint a fresh session.
-		const staleToken = await step(`${lanBase}/?token=stale-token-from-another-run`);
+		const mint = await step(`${lanBase}/dsh-lan/mint`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: PASSWORD }) });
+		// The route is gone; an unmatched POST reaches the SPA fallback, which
+		// answers 405. What must NOT happen is the old 302 to a token URL.
 		check(
-			"5 a stale token URL lands on the password page",
-			staleToken.status === 302 && staleToken.location === "/dsh-lan/",
-			`${String(staleToken.status)} ${String(staleToken.location)}`
+			"4 the removed mint endpoint no longer redirects to a token URL",
+			(mint.status === 404 || mint.status === 405) && !String(mint.location ?? "").includes("token="),
+			`${String(mint.status)} ${String(mint.location)} ${mint.body.slice(0, 60)}`
 		);
-		const spa = await step(`${lanBase}/`, { headers: { cookie } });
-		check("5 SPA is served to a cookie-carrying LAN client", spa.status === 200 && spa.body.includes("<html"), `${String(spa.status)} len=${spa.body.length}`);
 
-		// 5b ── the proxy must be TRANSPARENT, not merely reachable: the same path
-		// with the same credentials has to answer the same way locally and over the
-		// LAN. 1.5.0 shipped with this broken — the page loaded over the LAN while
-		// every /api call got a 403, because DSH's own trust funnel
-		// (`isTrustedApiRequest`) rejects a non-loopback Host authority and 1.4.x
-		// only ever patched `requestRejection`, which the API path no longer uses.
-		// Hence these comparisons.
+		// 5 ── the password cookie ALONE opens the app. This is the 1.8.0 contract:
+		// DSH's session cookie is no longer the LAN entrance, so a client that has
+		// the password (and nothing else) must get the SPA, the RPC and the socket.
+		const spa = await step(`${lanBase}/`, { headers: { cookie } });
+		check("5 the SPA is served to a password-only LAN client", spa.status === 200 && spa.body.includes("<html"), `${String(spa.status)} len=${spa.body.length}`);
 		check("5 the SPA manifest advertises this plugin", spa.body.includes("dsh-lan-tool"), spa.body.slice(0, 120));
 		const idContext = (spa.body.match(/[^"'\s]{0,70}dsh-lan-tool[^"'\s]{0,70}/) ?? [""])[0];
 		check("5 the manifest names the plugin's browser bundle", /\.js/.test(idContext), idContext || spa.body.slice(0, 200));
-		// 0.2.1 does not spell out a per-plugin URL: client-modules preloads a
-		// manifest whose combo href lists every bundle (`…,dsh-lan-tool/client.js,…`).
-		// Take that href verbatim (HTML-escaped ampersands included) so this stays
-		// a test of the PROXY, not of my ability to reconstruct the URL.
+		// Take the manifest's own combo href verbatim (HTML-escaped ampersands
+		// included) so this stays a test of the PROXY, not of URL reconstruction.
 		const combo = (spa.body.match(/["']([^"']*dsh-lan-tool\/client\.js[^"']*)["']/) ?? [])[1];
 		if (typeof combo === "string") {
 			const href = combo.replace(/&amp;/g, "&");
-			// The combo href is relative (`plugins/?…`), so resolve it against the
-			// document it came from rather than concatenating.
 			const lanBundle = await step(new URL(href, `${lanBase}/`).href, { headers: { cookie } });
-			const localBundle = await step(new URL(href, `${local}/`).href, { headers: { cookie: localCookie } });
+			const localBundle = await step(new URL(href, `${local}/`).href, { headers: { cookie: hostCookie } });
 			check(
 				"5 the client bundle is served identically local and via the proxy",
 				lanBundle.status === 200 && localBundle.status === 200 && lanBundle.body === localBundle.body && lanBundle.body.includes("dsh-lan-tool"),
@@ -459,11 +486,23 @@ boot(env, async (local, readyUrl, stop) => {
 		} else {
 			check("5 the client bundle is served identically local and via the proxy", false, `no combo href found; ctx=${idContext}`);
 		}
-		// 5c ── the EVENT STREAM. The conversation data arrives over the WebSocket
-		// mux (`/api/remote.mux`, dsh-api-gateway's REMOTE_STREAM_MUX_PATH), and the
-		// client shows "reconnecting" while it cannot hold that socket. A created
-		// WebSocket proves nothing — the handshake has to be ADMITTED — so do the
-		// upgrade by hand and read the status line.
+		// 5b ── the proxy must be TRANSPARENT, not merely reachable: the same path
+		// with the same credentials answers the same way locally and over the LAN.
+		// 1.5.0 shipped with this broken — the page loaded over the LAN while every
+		// /api call got 403, because DSH's fence rejects a non-loopback Host
+		// authority. 1.8.0 fixes it at the provider seam instead of `requestRejection`.
+		const rpcInit = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: 1, method: "noop" }) };
+		const lanRpc = await step(`${lanBase}/api/connection`, { ...rpcInit, headers: { ...rpcInit.headers, cookie } });
+		const localRpc = await step(`${local}/api/connection`, { ...rpcInit, headers: { ...rpcInit.headers, cookie: hostCookie } });
+		check(
+			"5 the RPC path answers the same local and via the proxy",
+			lanRpc.status === localRpc.status && lanRpc.status !== 403,
+			`lan=${String(lanRpc.status)} local=${String(localRpc.status)} lanBody=${lanRpc.body.slice(0, 60)}`
+		);
+		// 5c ── the EVENT STREAM. Conversation data arrives over the WebSocket mux
+		// (`/api/remote.mux`); the client shows "reconnecting" while it cannot hold
+		// that socket. A created WebSocket proves nothing — the handshake has to be
+		// ADMITTED — so do the upgrade by hand and read the status line.
 		const net = await import("node:net");
 		const wsProbe = (base, session) => new Promise((resolve) => {
 			const url = new URL(base);
@@ -483,50 +522,18 @@ boot(env, async (local, readyUrl, stop) => {
 			socket.on("error", () => finish());
 		});
 		const lanWs = await wsProbe(lanBase, cookie);
-		const localWs = await wsProbe(local, localCookie);
+		const localWs = await wsProbe(local, hostCookie);
 		check(
-			"5 the event-stream WebSocket upgrades on the LAN",
+			"5 the event stream upgrades on the LAN with the password alone",
 			lanWs.startsWith("HTTP/1.1 101") && localWs.startsWith("HTTP/1.1 101"),
 			`lan="${lanWs}" local="${localWs}"`
 		);
-		// 5c2 ── the REAL-WORLD case: a browser whose DSH session cookie belongs to a
-		// DIFFERENT authority. DSH used to pick a new port on every launch and the
-		// cookie name is derived from `Host:port`, so an old cookie never matches a new
-		// port. Such a client still holds the plugin's password cookie — that is what
-		// the LAN door is FOR. HTTP works (the fence admits local peers), but the
-		// WebSocket upgrade goes through `admitConnection → admit`, which additionally
-		// demands DSH's own browser session, so it answered 401 for ever.
-		const lanKeyOnly = await wsProbe(lanBase, `dsh-lan-key=${encodeURIComponent(PASSWORD)}`);
-		check(
-			"5 the event stream admits a password-only client (stale DSH cookie)",
-			lanKeyOnly.startsWith("HTTP/1.1 101"),
-			`status="${lanKeyOnly}"`
-		);
-		// 5f ── host-only endpoints must not accept a proxied request (v1.5.5).
-		// Through the proxy every LAN client has a LOOPBACK peer, so the peer test alone
-		// would let a device that merely knows the password change the password, flip the
-		// switch or read diagnostics. The proxy stamps what it forwards.
-		const lanConfigure = await step(`${lanBase}/dsh-lan/configure`, {
-			method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ lanPort: 19999 })
-		});
-		check("5f a proxied configure is refused", lanConfigure.status === 403, `${String(lanConfigure.status)} ${lanConfigure.body.slice(0, 80)}`);
-		const lanDiag = await step(`${lanBase}/dsh-lan/diag`, { headers: { cookie } });
-		check("5f a proxied diag is refused", lanDiag.status === 403, String(lanDiag.status));
-		const lanStatus = JSON.parse((await step(`${lanBase}/dsh-lan/status`, { headers: { cookie } })).body);
-		check("5f a proxied page is not host-only", lanStatus.hostOnly === false, JSON.stringify({ local: lanStatus.local, hostOnly: lanStatus.hostOnly }));
-		const hostStatus = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
-		check("5f the host page is host-only", hostStatus.hostOnly === true && hostStatus.local === true, JSON.stringify({ local: hostStatus.local, hostOnly: hostStatus.hostOnly }));
-		const hostConfigure = await step(`${local}/dsh-lan/configure`, {
-			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lanPort: null })
-		});
-		check("5f the host can still configure", hostConfigure.status === 200, String(hostConfigure.status));
 		// 5d ── and it must be RELEASABLE. DSH refuses a second upgrade for a peer
-		// that already owns one (409 in `admitConnection`) and clears that only when
-		// the socket really closes; LAN clients vanish abruptly all the time (page
-		// reload, phone sleeping, Wi-Fi handover). If the tunnel does not propagate
-		// the loss, the session keeps owning a dead socket: the session list still
-		// loads over HTTP while the event stream says "reconnecting" for ever —
-		// exactly the reported symptom.
+		// that already owns one (409) and clears that only when the socket really
+		// closes; LAN clients vanish abruptly all the time (page reload, phone
+		// sleeping, Wi-Fi handover). If the tunnel does not propagate the loss, the
+		// session keeps owning a dead socket: the list still loads over HTTP while
+		// the event stream says "reconnecting" for ever.
 		const openUpgrade = (base, session) => new Promise((resolve) => {
 			const url = new URL(base);
 			const socket = net.connect(Number(url.port), url.hostname, () => {
@@ -553,10 +560,44 @@ boot(env, async (local, readyUrl, stop) => {
 			first.status.startsWith("HTTP/1.1 101") && second.status.startsWith("HTTP/1.1 101"),
 			`first="${first.status}" second="${second.status}"`
 		);
-		// 5e ── the host-only diagnostic has to actually record those decisions.
-		// "The page opens but the conversation never connects" is invisible from the
-		// outside, so this log is the only way to tell a missing upgrade, a
-		// credential-less upgrade and an upstream refusal apart.
+		// 5e ── a STALE `?token=` must not dead-end. A phone can arrive with an old
+		// URL (bookmark, a URL copied from `dsh web`, a launcher that cached the
+		// previous run). DSH's token provider intercepts `GET /?token=` BEFORE
+		// routing and answers 401 plain text; the door strips the parameter, so a
+		// password-holding client gets the app and everyone else gets the form.
+		const staleNoCookie = await step(`${lanBase}/?token=stale-token-from-another-run`);
+		check(
+			"5 a stale token URL without a credential lands on the password page",
+			staleNoCookie.status === 302 && staleNoCookie.location === "/dsh-lan/",
+			`${String(staleNoCookie.status)} ${String(staleNoCookie.location)}`
+		);
+		const staleWithCookie = await step(`${lanBase}/?token=stale-token-from-another-run`, { headers: { cookie } });
+		check(
+			"5 a stale token is stripped for a password-holding client",
+			staleWithCookie.status === 200 && staleWithCookie.body.includes("<html"),
+			`${String(staleWithCookie.status)} len=${staleWithCookie.body.length}`
+		);
+		// 5f ── host-only endpoints must not accept a proxied request. Through the
+		// proxy every LAN client has a LOOPBACK peer, so the peer test alone would
+		// let a device that merely knows the password change the password, flip the
+		// switch or read diagnostics. The proxy stamps what it forwards.
+		const lanConfigure = await step(`${lanBase}/dsh-lan/configure`, {
+			method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ lanPort: 19999 })
+		});
+		check("5f a proxied configure is refused", lanConfigure.status === 403, `${String(lanConfigure.status)} ${lanConfigure.body.slice(0, 80)}`);
+		const lanDiag = await step(`${lanBase}/dsh-lan/diag`, { headers: { cookie } });
+		check("5f a proxied diag is refused", lanDiag.status === 403, String(lanDiag.status));
+		const lanStatus = JSON.parse((await step(`${lanBase}/dsh-lan/status`, { headers: { cookie } })).body);
+		check("5f a proxied page is not host-only", lanStatus.hostOnly === false, JSON.stringify({ local: lanStatus.local, hostOnly: lanStatus.hostOnly }));
+		const hostStatus = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
+		check("5f the host page is host-only", hostStatus.hostOnly === true && hostStatus.local === true, JSON.stringify({ local: hostStatus.local, hostOnly: hostStatus.hostOnly }));
+		const hostConfigure = await step(`${local}/dsh-lan/configure`, {
+			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lanPort: null })
+		});
+		check("5f the host can still configure", hostConfigure.status === 200, String(hostConfigure.status));
+		// 5g ── the host-only diagnostic records upgrade decisions, including the
+		// upstream status: "the page opens but the conversation never connects" is
+		// otherwise invisible from the outside.
 		const diag = await step(`${local}/dsh-lan/diag`);
 		const diagBody = JSON.parse(diag.body);
 		const upgradeEvents = Array.isArray(diagBody.events) ? diagBody.events.filter((e) => String(e.kind).startsWith("upgrade")) : [];
@@ -567,24 +608,15 @@ boot(env, async (local, readyUrl, stop) => {
 				&& upgradeEvents.some((e) => e.kind === "upgrade-upstream" && String(e.status).includes("101")),
 			`${String(diag.status)} events=${String(upgradeEvents.length)} ${JSON.stringify(upgradeEvents.slice(-3)).slice(0, 200)}`
 		);
-		const rpcInit = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: 1, method: "noop" }) };
-		const lanRpc = await step(`${lanBase}/api/connection`, { ...rpcInit, headers: { ...rpcInit.headers, cookie } });
-		const localRpc = await step(`${local}/api/connection`, { ...rpcInit, headers: { ...rpcInit.headers, cookie: localCookie } });
-		check(
-			"5 the RPC path answers the same local and via the proxy (trust funnel accepts the LAN authority)",
-			lanRpc.status === localRpc.status && lanRpc.status !== 403,
-			`lan=${String(lanRpc.status)} local=${String(localRpc.status)} lanBody=${lanRpc.body.slice(0, 60)}`
-		);
-		// …and the path the LAN browser ACTUALLY uses. Its client half calls
-		// `clientIsLocal() === false` on a LAN origin and rewrites `/api` to
-		// `/lanapi`, which this plugin serves by re-issuing the request in-process
-		// as the host. So `/lanapi` — not `/api` — is what carries a real LAN
-		// session's traffic, and it has to answer the same way.
+		// 5h ── the path a LAN browser ACTUALLY uses. Its client half sees a
+		// non-local origin (the plugin's status reports `hostOnly: false`) and
+		// rewrites `/api` to `/lanapi`, which this plugin serves by re-issuing the
+		// request in-process as the host. It has to answer the same way.
 		const lanApi = await step(`${lanBase}/lanapi/connection`, {
 			method: "POST", headers: { "content-type": "application/json", cookie }, body: rpcInit.body
 		});
 		const localApi = await step(`${local}/lanapi/connection`, {
-			method: "POST", headers: { "content-type": "application/json", cookie: localCookie }, body: rpcInit.body
+			method: "POST", headers: { "content-type": "application/json", cookie: hostCookie }, body: rpcInit.body
 		});
 		check(
 			"5 the client half's /lanapi reroute answers the same local and via the proxy",
@@ -599,10 +631,10 @@ boot(env, async (local, readyUrl, stop) => {
 		check("6 state file records the desire", state.lanEnabled === true, JSON.stringify(state).slice(0, 90));
 
 		// 7 ── a PINNED LAN port. DSH's own port is OS-assigned on every launch (the
-		// desktop launcher passes `--port 0`), so an open LAN tab reconnects to a dead
-		// port after a restart and sits on "reconnecting" for ever. Pinning belongs on
-		// the plugin's own listener: a busy port there costs LAN access (plus a clear
-		// line in the card), never the app.
+		// desktop launcher passes `--port 0`), so an open LAN tab reconnects to a
+		// dead port after a restart and sits on "reconnecting" for ever. Pinning
+		// belongs on the plugin's own listener: a busy port there costs LAN access
+		// (plus a clear line in the card), never the app.
 		const { createServer } = await import("node:net");
 		const free = await new Promise((resolve) => {
 			const probe = createServer();
@@ -633,6 +665,12 @@ boot(env, async (local, readyUrl, stop) => {
 			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lanPort: null })
 		});
 		check("7 clearing the pin returns to following DSH", cleared.status === 200 && JSON.parse(cleared.body).lanPort === null, `${String(cleared.status)} ${cleared.body.slice(0, 80)}`);
+		// The port move runs through the same deferred `refresh().then(sync)` path
+		// as a toggle, so give it a beat and then confirm the fence is STILL full:
+		// a port change must not leave the door open with a degraded gate.
+		await new Promise((resolve) => setTimeout(resolve, 1200));
+		const settled = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
+		check("7 the fence survives the port move", settled.enforcement === "full", String(settled.enforcement));
 	} catch (error) {
 		check("E2E ran without throwing", false, String(error?.stack ?? error).slice(0, 300));
 	}
