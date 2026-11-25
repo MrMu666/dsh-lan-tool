@@ -1165,6 +1165,7 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   const res = makeRes();
   await h.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), res);
   check('Q the surviving route still answers', res.statusCode === 200 && json(res).version === pkg.version, `${res.statusCode} ${res.body.slice(0, 60)}`);
+  check('Q the instance slot is published for the next apply', typeof globalThis[Symbol.for('dsh-lan-tool.instance')]?.retire === 'function', String(typeof globalThis[Symbol.for('dsh-lan-tool.instance')]));
   h.dispose();
 
   // 2) a path left behind by the PREVIOUS package version (unreachable disposer)
@@ -1185,6 +1186,37 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   let threw3 = null;
   try { plugin.apply(k.ctx, {}); } catch (error) { threw3 = error; }
   check('Q an unrelated register failure is still raised', threw3 !== null && /something else/.test(String(threw3)), String(threw3));
+}
+
+// ── O2. v1.9.2: a taken port is REPORTED, not spun on for ever ─────────────
+// The card used to sit on "正在生效…" when a listener left by a previous plugin
+// instance still held the port: `refresh()` bound nothing and nothing was said.
+// The proxy now records why, so the caller can fall back to DSH's port or turn
+// the switch back off with a reason.
+{
+  const { createServer } = await import('node:http');
+  const { createLanProxy } = await import('../lib/lan-proxy.js');
+  const upstream = createServer((req, res) => { res.writeHead(200); res.end('ok'); });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamPort = upstream.address().port;
+  const blocker = createServer((req, res) => { res.writeHead(503); res.end(); });
+  await new Promise((resolve) => blocker.listen(0, '127.0.0.2', resolve));
+  const blockedPort = blocker.address().port;
+  const proxy = createLanProxy({
+    target: () => ({ host: '127.0.0.1', port: upstreamPort }),
+    admit: () => true,
+    addresses: () => ['127.0.0.2'],
+    listenPort: () => blockedPort,
+    log: () => {},
+  });
+  const first = await proxy.refresh();
+  check('O2 a taken port yields no listener', first.length === 0, JSON.stringify(first));
+  check('O2 ...and the failure is reported', proxy.lastFailure()?.code === 'EADDRINUSE', JSON.stringify(proxy.lastFailure()));
+  await new Promise((resolve) => blocker.close(resolve));
+  const second = await proxy.refresh();
+  check('O2 ...and a retry after the port frees up succeeds', second.length === 1 && proxy.lastFailure() === null, JSON.stringify({ second, failure: proxy.lastFailure() }));
+  proxy.stop();
+  upstream.close();
 }
 
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);
