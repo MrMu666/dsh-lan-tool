@@ -23,6 +23,8 @@ process.env.DSH_HOME = HOME;
 const PATCH = join(HOME, 'profiles', 'desktop', 'cordis.patch.yml');
 /** The one DSH release this plugin version pins; bump together with package.json. */
 const SUPPORTED_DSH = '0.2.3-alpha.2';
+/** v1.9.0: the gate admits the whole 0.2.3 line; the build above is the verified one. */
+const DSH_RANGE = '>=0.2.3-alpha.1 <0.2.4-0';
 
 // The firewall must never be touched for real: stub node:child_process. The
 // stub is scriptable, so the firewall verdicts below can be driven through the
@@ -606,8 +608,12 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   // 1.7.2 — the plugin targets exactly one DSH release (0.2.2-rc.3). The
   // manifest gate is `engines.dsh` (dsh-app-boot checks engines.dsh and, when
   // present, ignores peers entirely), so the pin has to live there.
-  check('H the manifest pins exactly the supported DSH release', pkg.engines?.dsh === SUPPORTED_DSH, JSON.stringify(pkg.engines));
-  check('H the compatibility metadata names only that release', pkg.dsh?.compatibility?.dsh === SUPPORTED_DSH && Object.keys(pkg.dsh.compatibility.dshReleases ?? {}).join(',') === SUPPORTED_DSH, JSON.stringify(pkg.dsh?.compatibility));
+  check('H the manifest gate covers the whole 0.2.3 line', pkg.engines?.dsh === DSH_RANGE, JSON.stringify(pkg.engines));
+  check(
+    'H the compatibility metadata mirrors the gate and records the verified build',
+    pkg.dsh?.compatibility?.dsh === DSH_RANGE && SUPPORTED_DSH in (pkg.dsh?.compatibility?.dshReleases ?? {}),
+    JSON.stringify(pkg.dsh?.compatibility),
+  );
   // 1.6.0 — rc.3 removed `connection.api`/`postJson`, so the per-service wrapper
   // is dead code; every remote call goes through window.fetch (the fetch reroute).
   check('H the dead connection.api wrapper is gone', !client.includes('function wrapApi') && !client.includes('api.postJson') && !client.includes('__dshLanWrapped'));
@@ -1066,6 +1072,68 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   proxy.stop();
   check('O stop() closes the listeners', proxy.listening() === false);
   upstream.close();
+}
+
+// ── P. v1.9.0: an update closes the door; enabling runs a self-check ───────
+// The version gate only decides whether this plugin may load. Whether the seams
+// it patches still BEHAVE is a runtime question, so every install/upgrade (of
+// the plugin or of DSH) starts closed and the switch refuses to open until the
+// capability probe passes.
+{
+  const statePath = join(HOME, 'dsh-lan.json');
+  const readIt = () => JSON.parse(readFileSync(statePath, 'utf8'));
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
+  // 1) a state file from an older plugin, with LAN on, meets a new build
+  writeFileSync(statePath, JSON.stringify({ lanEnabled: true, passwordVersion: 1 }));
+  const first = makeHarness({ bindHost: '127.0.0.1' });
+  const after = readIt();
+  check('P an update forces the LAN switch off', after.lanEnabled === false, JSON.stringify(after).slice(0, 120));
+  check('P ...and records the new build identity', after.pluginVersion === pkg.version, String(after.pluginVersion));
+  check('P ...and leaves a one-shot notice', after.autoDisabled != null && after.autoDisabled.plugin === pkg.version, JSON.stringify(after.autoDisabled));
+  const offStatus = makeRes();
+  await first.routes.get('exact /dsh-lan/status').handler(makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387' }), offStatus);
+  const offBody = json(offStatus);
+  check('P the status reports the door as closed', offBody.desiredEnabled === false && offBody.enabled === false, JSON.stringify({ d: offBody.desiredEnabled, e: offBody.enabled }));
+  check('P the card can explain the auto-off', offBody.autoDisabled != null);
+
+  // 2) a plain restart of the SAME build must keep the user's choice
+  writeFileSync(statePath, JSON.stringify({ ...readIt(), lanEnabled: true }));
+  makeHarness({ bindHost: '127.0.0.1' });
+  check('P a restart of the same build keeps the switch on', readIt().lanEnabled === true, JSON.stringify(readIt()).slice(0, 120));
+
+  // 3) a DSH version change forces it off again (the plugin is unchanged)
+  writeFileSync(statePath, JSON.stringify({ ...readIt(), dshVersion: '0.2.2-rc.3' }));
+  makeHarness({ bindHost: '127.0.0.1' });
+  check('P a DSH upgrade forces the switch off', readIt().lanEnabled === false, JSON.stringify(readIt()).slice(0, 120));
+
+  // 4) a build whose seams are gone must refuse to open the door
+  const broken = makeHarness({ bindHost: '0.0.0.0' });
+  broken.connection.isTrustedRequest = undefined;
+  const refusedRes = makeRes();
+  await broken.routes.get('exact /dsh-lan/configure').handler(
+    makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/dsh-lan/configure', body: { enabled: true } }),
+    refusedRes,
+  );
+  const refused = json(refusedRes);
+  // NOTE: `enabled` also counts "DSH itself is bound off-loopback", which this
+  // fixture forces to make the fence installable; what the refusal owns is the
+  // DESIRE (and therefore our proxy), so that is what is asserted.
+  check('P enabling on an unverified build is refused', refused.desiredEnabled === false && readIt().lanEnabled === false, JSON.stringify({ d: refused.desiredEnabled, e: refused.enabled }));
+  check('P ...with the missing piece named for the card', typeof refused.incompatible === 'string' && refused.incompatible.includes('isTrustedRequest'), String(refused.incompatible));
+  check('P ...and the attempt retires the update notice', readIt().autoDisabled === undefined);
+
+  // 5) a healthy build enables cleanly and stays silent (no red line on success)
+  const good = makeHarness({ bindHost: '0.0.0.0' });
+  const okRes = makeRes();
+  await good.routes.get('exact /dsh-lan/configure').handler(
+    makeReq({ peer: '127.0.0.1', host: '127.0.0.1:19387', method: 'POST', url: '/dsh-lan/configure', body: { enabled: true } }),
+    okRes,
+  );
+  const okBody = json(okRes);
+  check('P a verified build enables without a warning', okBody.desiredEnabled === true && okBody.incompatible === null, JSON.stringify({ d: okBody.desiredEnabled, i: okBody.incompatible }));
+  check('P the toggle retires the update notice', readIt().autoDisabled === undefined);
+  good.dispose();
 }
 
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);

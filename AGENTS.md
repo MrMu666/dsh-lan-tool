@@ -2,7 +2,7 @@
 
 给后续修改本项目的 AI/开发者：先读完本文件再动代码。这里记录的是**踩过的坑、必须遵守的契约、以及验证方法**，不是项目介绍（介绍见 `README.md`）。
 
-当前基线：**dsh-lan-tool 1.8.0 ↔ DeepSeek Harness 桌面版 0.2.3-alpha.2**（`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-24 实测 runtime.json 仍写 0.2.2-rc.3，而 asar 已是 `0.2.3-alpha.2`）。本文件的运行时事实均已在 0.2.3-alpha.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.2-rc.3 → 0.2.3-alpha.2 的认证重构（整个门禁换了落点）见 §3.6 与 §7 的 1.8.0 条。**
+当前基线：**dsh-lan-tool 1.9.0 ↔ DeepSeek Harness 桌面版 0.2.3 线**（`>=0.2.3-alpha.1 <0.2.4-0`；逐文件核对的是 0.2.3-alpha.2；`runtime.json` 的 `desktopVersion` 可能滞后，以 `app.asar` 内 `dsh/package.json` 的 `version` 为准；2026-11-24 实测 runtime.json 仍写 0.2.2-rc.3，而 asar 已是 `0.2.3-alpha.2`）。本文件的运行时事实均已在 0.2.3-alpha.2 的 `app.asar` 内逐文件核对，括号里给的是 asar 内路径（以 `dsh/node_modules/` 开头）。**0.2.0-rc.2 → 0.2.1-rc.2 的破坏性变更见 §3.5（那一条改了整个局域网实现方式）；0.2.2-rc.3 → 0.2.3-alpha.2 的认证重构（整个门禁换了落点）见 §3.6 与 §7 的 1.8.0 条。**
 
 ---
 
@@ -68,7 +68,7 @@ test/lan-proxy-e2e.mjs        **可选**端到端（真 Host + 真代理，会�
 
 **版本闸门（0.2.1 新增，先看这条再决定 `package.json` 怎么写）**：`dsh-app-boot` 的 `unmetRequirements()` 只校验**两处** —— 有 `engines.dsh` 时**只**看它（peer 全部忽略），否则逐个检查 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 `peerDependencies`；比较用 `semver.satisfies(..., { includePrerelease: true })`。不满足时 plugin-manager 会以 `incompatible-version` 拒绝安装/启用，要用 `dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <rt> --accept-risk` 授权。
 
-**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.8.0）写的是 `"engines": { "dsh": "0.2.3-alpha.2" }`（**精确值，不是范围**）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
+**1.6.0 起本插件是"刻意钉死版本"的**（用户 2026-10-26 的要求："仅兼容当前版本号"）：当前 `package.json`（1.9.0）写的是 `"engines": { "dsh": ">=0.2.3-alpha.1 <0.2.4-0" }`（**范围，只覆盖 0.2.3 整条线**；上界必须写 `<0.2.4-0`，写 `<0.2.4` 会把 0.2.4 的 prerelease 也吃进来）。范围只决定"能不能装"，"能不能用"由运行时自检决定（见 §3.6）。因为插件直接改写 `connection`/`webServer` 的内部行为，跨版本无法保证；这条闸就是"DSH 升级后必须先发新版插件"的机制。⇒ **DSH 一升版，插件就会以 `incompatible-version` 装不上/起不来**，这是设计而非 bug；发新版时同步改 `engines.dsh`、`dsh.compatibility`（同一条）与 README 的版本声明。**不要**再给 `peerDependencies` 加具体范围（有 `engines.dsh` 时 peer 根本不参与判定，加了只会误导）。`dsh.compatibility.*` 仍是**纯元数据**（全 asar 无消费点），真正的闸只有 `engines.dsh`。
 
 ```powershell
 $src='D:\DeepSeek\dsh-LAN'; $dst='C:\Users\MyBook\.dsh\profiles\desktop\node_modules\dsh-lan-tool'
@@ -197,7 +197,7 @@ Get-FileHash "$src\lib\client.js","$dst\lib\client.js" | Format-Table   # 逐个
 
 ### 4.1 离线自测（首选，不需要装插件）
 
-**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**273 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（非代理请求一律交回 DSH 自己的围栏；只有"本方代理盖了戳"的请求才被信任，且只有"戳 + 口令"才拿到 owner Peer；未盖章的请求即使带对口令也拿不到；错口令/无口令一律回落 DSH；直连部署只在 DSH 自己承认的 authority 上认口令；`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、路由 `auth` 声明（8 条 `anonymous` + `/lanapi` 保持 required）、`?token=` 剥除、代理 `rewrite` 钩子、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
+**仓库里已有一份可直接跑的回归测试**：`test/loopback-gate.test.mjs`（`npm test`，约 1 秒，**285 项断言**）。它锁定三条硬规则：**①主机自己永不被口令门拦、局域网设备必被拦**（非代理请求一律交回 DSH 自己的围栏；只有"本方代理盖了戳"的请求才被信任，且只有"戳 + 口令"才拿到 owner Peer；未盖章的请求即使带对口令也拿不到；错口令/无口令一律回落 DSH；直连部署只在 DSH 自己承认的 authority 上认口令；`configure` 只认主机、`/lanapi` 对无 key 设备 403；客户端侧从真实源码切出 `isLoopbackHostname`/`detectLocalClient`/`shouldGate` 动态跑，覆盖 `[::1]` 带方括号、旧服务端无 `local`、缺字段、探测失败、版本不一致——一律不许挂 gate）；**②防火墙状态不许撒谎**（打桩 `netsh` 与 PowerShell 输出，断言"我们自己的规则 / 系统弹窗建的规则（同程序）/ 别人的 Any 端口规则（不算）/ 端口列表与区间 / UDP 不算 / 有局域网设备连入过"六类判定，外加规则名乱码回退、超长截断）；**③移动端适配确实已删除**（静态断言：无 `mobileAdapt`/鲸鱼/滑动/长按/Enter 改写，`inject` 不再含 `layout`）。另有版本一致性（两处 `PLUGIN_VERSION` = package.json）、路由 `auth` 声明（8 条 `anonymous` + `/lanapi` 保持 required）、`?token=` 剥除、代理 `rewrite` 钩子、中文文案转义解码、以及"重绑期的网络错误被当成预期"的静态断言。**改 `lib/index.js` 的门禁/防火墙判定、或 `lib/client.js` 的 gate/目录选择器之前，先跑它**。
 
 其余场景（迁移/开关/路由）按下法自测：
 
@@ -236,7 +236,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 - 在 `%TEMP%` 建一个一次性 `DSH_HOME`，profile 文本文件从线上 profile **复制**，`node_modules/dsh-lan-tool` 用 **junction 指向仓库工作树**（所以测的就是当前代码，不需要安装/发布），并把 `dsh-lan-tool` 追加进 `dsh.profile.bundles`；
 - 写 `dsh-lan.json` 时**删掉真实口令**（`passwordHash`/`salt`），只置 `lanEnabled: true`，口令由测试自己在启动后从**主机侧**调 `/dsh-lan/configure` 设一个新值 —— 所以这个测试不需要、也拿不到用户的口令；
-- 用 §7 1.4.5 那条"假 main 进程"手法启动真 Host（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` + asar 内的 `dsh-desktop-host`），**并按 0.2.3 的约定扮演桌面壳**：进程一起来就生成 43 字符 base64url secret、经 IPC 发 `{type:"desktop-auth", secret}`（重复发送是硬失败，已加幂等守卫），收到 `{type:"ready", url}` 后把 `dsh-desktop-session=<secret>` 当宿主凭据。之后按顺序验证 **41 项**：宿主凭据被接受且缺凭据时确实 401 / 代理起来且 DSH 仍在回环 / `enforcement === "full"`（两方法补丁真的装上了）/ 无凭据的 `/` 302 到落地页、`/api` 403 / 落地页不再调用 mint / **无凭据也能取到 `manifest.webmanifest` 与 `icon-192.png`**（浏览器抓 manifest 时**不带 cookie**，代理挡了就等于 PWA 装机静默失效）/ 错口令拒、对口令过 / **只带 `dsh-lan-key` 就能拿到 SPA、RPC 与 WebSocket 101，且断线后可重连** / 旧 `?token=` 对有口令者被剥掉、对其他人回落地页 / 主机专用端点拒绝代理请求 / `/lanapi` 两侧一致 / **补丁里始终没有 `webserver` 覆盖** / 钉住的 LAN 端口生效且换端口后栅栏仍是 full；
+- 用 §7 1.4.5 那条"假 main 进程"手法启动真 Host（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` + asar 内的 `dsh-desktop-host`），**并按 0.2.3 的约定扮演桌面壳**：进程一起来就生成 43 字符 base64url secret、经 IPC 发 `{type:"desktop-auth", secret}`（重复发送是硬失败，已加幂等守卫），收到 `{type:"ready", url}` 后把 `dsh-desktop-session=<secret>` 当宿主凭据。之后按顺序验证 **45 项**：宿主凭据被接受且缺凭据时确实 401 / 代理起来且 DSH 仍在回环 / `enforcement === "full"`（两方法补丁真的装上了）/ 无凭据的 `/` 302 到落地页、`/api` 403 / 落地页不再调用 mint / **无凭据也能取到 `manifest.webmanifest` 与 `icon-192.png`**（浏览器抓 manifest 时**不带 cookie**，代理挡了就等于 PWA 装机静默失效）/ 错口令拒、对口令过 / **只带 `dsh-lan-key` 就能拿到 SPA、RPC 与 WebSocket 101，且断线后可重连** / 旧 `?token=` 对有口令者被剥掉、对其他人回落地页 / 主机专用端点拒绝代理请求 / `/lanapi` 两侧一致 / **补丁里始终没有 `webserver` 覆盖** / 钉住的 LAN 端口生效且换端口后栅栏仍是 full；
 - 加 `DSH_E2E_BROWSER=1` 会再跑一段**真无头 Chrome**（CDP）检查：同一台机器上 `local/desktop`、`lan/desktop`、`lan/phone`(390px) 三个 origin 各开一个 target，采样控制台异常、失败请求、≥400 响应与 WebSocket 帧。**判据是三个 origin 都 `console=0 exceptions=0 failed=0 bad=0`、WS 握手 101 且收到会话帧、`hasGate=false`、`hasComposer=true`，并打印 `local vs lan identical`**（手机端 `sidebarCollapsed=true` 是官方窄屏抽屉，不是缺陷）。2026-11-25 实测：local/lan 文本一致（textLen 110/110）、三者各收到 38 KB 会话帧；**正是这一段抓出了 manifest 的 403**；
 - 收尾会**优雅关闭**子进程（IPC `shutdown` → 5 秒后 SIGKILL 兜底）：直接 `kill()` 在 Windows 上会留下孤儿 Host，而它还占着局域网监听端口，下一次运行就会撞车（踩过一次）。
 
@@ -330,6 +330,15 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 
 ## 7. 历史修复（防回归）
 
+### 1.9.0 — 版本闸改成 0.2.3 整条线；升级后强制关闸，开启时做兼容性自检
+
+- **为什么放宽**：0.2.3 天天出 alpha，精确钉死意味着每个 nightly 都要发一次插件。`engines.dsh` 改成 `>=0.2.3-alpha.1 <0.2.4-0`（上界必须写 `<0.2.4-0`：写 `<0.2.4` 会把 0.2.4 的 prerelease 也吃进来；`^0.2.3` 则一个 alpha 都不匹配 —— 三条都用 asar 里的 semver 实测过）。`dshReleases` 只记录**逐文件核对过**的构建（当前 `0.2.3-alpha.2`），它仍是纯元数据。
+- **为什么范围还不够**：范围只回答"能不能装"，回答不了"内部接口还对不对"。所以补了两层：
+  1. **升级即关闸**：`dsh-lan.json` 记 `pluginVersion` 与 `dshVersion`（取自 `profileContext.installAnchor` 的 `version`，这是唯一可靠的"当前跑的是哪个 DSH"来源——插件解析不到 `@deepseek-ai/dsh`）。任一变化 ⇒ `lanEnabled` 强制 false，并在状态里留一条一次性的 `autoDisabled`；用户任何一次拨动开关都会清掉它。**同一版本的重启不关闸**（否则每次启动都要重开）。
+  2. **开启即自检**：`configure({enabled:true})` 先跑 `probeContract()`（`isTrustedRequest` + `authentication.authenticate` + `webServer.register` 都在，且 `ensureFencePatched` 能装上），任一缺失 ⇒ 开关保持关闭、`incompatible` 写上缺哪一块；通过后代理才开监听，随即 `probeLive()` 用本机的局域网地址实测两个方向（`/dsh-lan/` 必须 200，未认证的 `/` 必须 302），失败则**立刻关掉监听**并回写原因。
+- **UI 约定（用户要求）**：自检**通过时不显示任何红字**；只有失败才在卡片上出现一行红色说明。`autoDisabled` 用中性灰字提示一次。
+- **顺带**：`profileOf` 现在带出 `installAnchor`；`buildStatus` 新增 `autoDisabled` 与 `incompatible`。
+- **验证**：`npm test` **285/285**（新增 P 段 12 项：升级关闸 / 同版本不关 / DSH 升级关闸 / 缺接口拒绝开启 / 健康构建无警告）；真 Host e2e **45/45**（新增"升级后门是关的""开启通过自检后 `enforcement: full`、`incompatible: null`"）。
 ### 1.8.0 — 适配 DSH 0.2.3-alpha.2 的认证重构（门禁换挂接点，落地页去掉 mint）
 
 - **背景**：用户更新到桌面版 0.2.3-alpha.2（rc.3 → rc.4 → rc.5 → alpha.1 → alpha.2，2361 commits）。alpha.1 的"Web 连接模式远程登录 + 标准化连接鉴权 API 供插件注册"就是这次重构：Connection 把认证做成 Provider 注册表，**移除** `requestRejection` / `browserAuth` / `authorizeIndex` / `authenticatedUrl` / `isTrusted` / `admitConnection`，WebServer 每条路由新增 `auth: 'anonymous' | 'required' | 'deny'`（缺省 `required`），授权统一走 `webserver/authorize`。⇒ **1.7.2 的口令门在 0.2.3 上连一个补丁都装不上**（`ensureFencePatched` 第一步就返回 false），即使强行 `allow-version` 也会出现"设置卡绿灯、局域网全 403"的假象。
@@ -342,7 +351,7 @@ YAML 用 asar 里自带的 `yaml`（`dsh/node_modules/yaml`）解析，别用肉
 - **桌面壳握手已变**：0.2.3 改成 IPC 传 secret + `dsh-desktop-session` cookie + `DesktopAuthentication` provider，`authenticateWebHost()` 的 303/Set-Cookie 契约消失；1.4.5 的历史包袱与 `patchedAuthorize` 一起作废。
 - **客户端半边几乎不变**：`__ModuleLoader__.load`、`/plugins/<包名>/client.js`、slot 注册（`priority`/`order`/`registrant`）、`uiWorkspace`/`workspaces`、`connection` handle、`__DSH_TRANSPORT__.ownsHost`、`settings.general.item`、`sidebar.footer.action`、两个 `directoryFlow` 洞都在；`apply(ctx)` 不读第二参，`SyncedConfig` 变化无影响。**唯一要注意**：`/plugins/events` 已删除（调试改用 `pluginEvents/follow`，非 owner Peer 需授权），`initialBundleSnapshot` 改名（现为 `artifactBaseline(id)` + `rebuilt(id)`）。
 - **本次改动**：`lib/index.js`（门禁重写、路由 auth、mint 删除、token 剥除、`readHeader` 兼容 Headers、`inject` 加 `connection.authentication`）、`lib/lan-proxy.js`（`rewrite` 钩子、`stampProxyHeaders`）、`lib/landing.html`（去 mint、`hostOnly`）、`lib/client.js`（版本号）、`package.json`（1.8.0 / `engines.dsh=0.2.3-alpha.2` / Node `>=24.22.3`）、README ×2、测试（harness 与 A/B/C/F/N/N2/K4 段重写，新增路由 auth 与 token 剥除断言）、本文件。
-- **验证**：`npm test` **273/273**；真 Host e2e（§4.4）**41/41**（隔离 `DSH_HOME` + 仓库 junction，真 0.2.3-alpha.2 Host、真代理、真 WebSocket），覆盖"只带口令 cookie 的局域网客户端能拿到 SPA/RPC/事件流""旧 `?token=` 被剥掉""换端口后 `enforcement` 仍为 full"。
+- **验证**：`npm test` **285/285**；真 Host e2e（§4.4）**45/45**（隔离 `DSH_HOME` + 仓库 junction，真 0.2.3-alpha.2 Host、真代理、真 WebSocket），覆盖"只带口令 cookie 的局域网客户端能拿到 SPA/RPC/事件流""旧 `?token=` 被剥掉""换端口后 `enforcement` 仍为 full"。
 - **顺手修掉的一个 shutdown 假警报**：钉住/清除端口会排一个 `refresh().then(syncEnforcement)`，它可能在组合被销毁后落地，于是每次退出都打一行 `LAN fence patch failed, enforcement degraded`（e2e 日志里就是这样发现的）。`syncEnforcement` 现在先确认 `connection` 服务还在，不在就静默返回——真正的降级仍由 `/dsh-lan/status` 的 `enforcement` 字段报告。
 
 ### 1.7.2 — 对齐 DSH 0.2.2-rc.3（只改版本闸，功能不变）

@@ -401,25 +401,41 @@ boot(env, async (local, hostCookie, stop) => {
 		const anonymous = await step(`${local}/`);
 		check("0 the host is not wide open without its credential", anonymous.status === 401, String(anonymous.status));
 
-		// 1 ── the door is open, DSH itself stayed on loopback, and the 0.2.3 fence
-		// (isTrustedRequest + authentication.authenticate) really installed. The
-		// last one is the whole 1.8.0 migration: a "degraded" verdict here means the
-		// LAN page would load and every API call would 403.
-		const st = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
-		console.log("--- status:", JSON.stringify({ enabled: st.enabled, desired: st.desiredEnabled, applying: st.applying, bindHost: st.bindHost, port: st.port, lanUrls: st.lanUrls, enforcement: st.enforcement }));
-		check("1 proxy is listening (enabled)", st.enabled === true, JSON.stringify(st.enabled));
-		check("1 no apply gap (applying=false)", st.applying === false, String(st.applying));
-		check("1 DSH itself is still bound to loopback", /^(127\.|::1)/.test(String(st.bindHost)), String(st.bindHost));
-		check("1 LAN URLs are advertised", Array.isArray(st.lanUrls) && st.lanUrls.length > 0, JSON.stringify(st.lanUrls));
-		check("1 the 0.2.3 fence is fully installed (not degraded)", st.enforcement === "full", String(st.enforcement));
-		const lanBase = String(st.lanUrls[0]).replace(/\/$/, "");
-		lanBaseForBrowser = lanBase;
+		// 1 ── v1.9.0: the fixture ships `lanEnabled: true` as if the previous
+		// plugin version had left it on. A plugin/DSH upgrade must start CLOSED,
+		// so that enabling again always runs the compatibility self-check.
+		const boot = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
+		check("1 an update leaves the LAN door closed", boot.desiredEnabled === false && boot.enabled === false, JSON.stringify({ d: boot.desiredEnabled, e: boot.enabled }));
+		check("1 ...and the card is told why", boot.autoDisabled !== null && boot.autoDisabled !== undefined, JSON.stringify(boot.autoDisabled));
+		const bootState = JSON.parse(readFileSync(join(env.home, "dsh-lan.json"), "utf8"));
+		check("1 ...and the new build identity is recorded", typeof bootState.pluginVersion === "string" && bootState.pluginVersion.length > 0 && typeof bootState.dshVersion === "string", JSON.stringify(bootState).slice(0, 140));
 
 		// 2 ── a known password, set from the host side (configure is host-only)
 		const cfg = await step(`${local}/dsh-lan/configure`, {
 			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: PASSWORD })
 		});
 		check("2 host sets a password", cfg.status === 200 && JSON.parse(cfg.body).passwordSet === true, `${String(cfg.status)} ${cfg.body.slice(0, 90)}`);
+
+		// 2b ── enable it. This is a real user action, so it must pass the
+		// capability self-check (seams + a live request through the just-opened
+		// door) before the proxy is left listening.
+		const on = await step(`${local}/dsh-lan/configure`, {
+			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true })
+		});
+		check("2b the toggle is accepted", on.status === 200 && JSON.parse(on.body).desiredEnabled === true, `${String(on.status)} ${on.body.slice(0, 120)}`);
+		let st = JSON.parse(on.body);
+		for (let i = 0; i < 25 && st.enabled !== true; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			st = JSON.parse((await step(`${local}/dsh-lan/status`)).body);
+		}
+		console.log("--- status:", JSON.stringify({ enabled: st.enabled, desired: st.desiredEnabled, applying: st.applying, bindHost: st.bindHost, port: st.port, lanUrls: st.lanUrls, enforcement: st.enforcement, incompatible: st.incompatible }));
+		check("2b the self-check passed and the door opened", st.enabled === true && st.incompatible === null, JSON.stringify({ e: st.enabled, i: st.incompatible }));
+		check("2b no apply gap (applying=false)", st.applying === false, String(st.applying));
+		check("2b DSH itself is still bound to loopback", /^(127\.|::1)/.test(String(st.bindHost)), String(st.bindHost));
+		check("2b LAN URLs are advertised", Array.isArray(st.lanUrls) && st.lanUrls.length > 0, JSON.stringify(st.lanUrls));
+		check("2b the 0.2.3 fence is fully installed (not degraded)", st.enforcement === "full", String(st.enforcement));
+		const lanBase = String(st.lanUrls[0]).replace(/\/$/, "");
+		lanBaseForBrowser = lanBase;
 
 		// 3 ── the gate, seen from the LAN
 		const bare = await step(`${lanBase}/`);
