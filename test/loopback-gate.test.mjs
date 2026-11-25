@@ -1219,6 +1219,36 @@ const HOSTS = ['127.0.0.1:19387', 'localhost:19387', '[::1]:19387', 'desktop-o6u
   upstream.close();
 }
 
+// ── R. v1.9.3: an abandoned listener is force-closed, never routed around ──
+// The user's rule: if the previous instance still holds the port, take it away
+// from that instance; if that is impossible (another PROCESS), say "restart" in
+// red. Moving to a different port is not an option.
+{
+  const { createServer } = await import('node:http');
+  const { reclaimAbandonedListeners } = await import('../lib/index.js');
+
+  const stranger = createServer((req, res) => { res.writeHead(503); res.end(); });
+  await new Promise((resolve) => stranger.listen(0, '127.0.0.2', resolve));
+  const strayPort = stranger.address().port;
+  const closed = reclaimAbandonedListeners({ owns: () => false, port: strayPort, addresses: ['127.0.0.2'] });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  check('R an abandoned listener on our port is force-closed', closed === 1 && stranger.listening === false, `closed=${closed} listening=${stranger.listening}`);
+
+  const own = createServer((req, res) => { res.writeHead(200); res.end(); });
+  await new Promise((resolve) => own.listen(0, '127.0.0.2', resolve));
+  const ownPort = own.address().port;
+  const kept = reclaimAbandonedListeners({ owns: (handle) => handle === own, port: ownPort, addresses: ['127.0.0.2'] });
+  check('R our own listener is left alone', kept === 0 && own.listening === true, `kept=${kept} listening=${own.listening}`);
+  own.close();
+
+  const elsewhere = createServer((req, res) => { res.writeHead(200); res.end(); });
+  await new Promise((resolve) => elsewhere.listen(0, '127.0.0.1', resolve));
+  const otherPort = elsewhere.address().port;
+  const untouched = reclaimAbandonedListeners({ owns: () => false, port: otherPort, addresses: ['127.0.0.2'] });
+  check('R a listener on another address is untouched', untouched === 0 && elsewhere.listening === true, `closed=${untouched}`);
+  elsewhere.close();
+}
+
 console.log(`PASS ${ok.length} / ${ok.length + fails.length}`);
 for (const f of fails) console.log('  FAIL: ' + f);
 rmSync(HOME, { recursive: true, force: true });
